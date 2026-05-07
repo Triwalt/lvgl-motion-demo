@@ -1,6 +1,8 @@
 #ifndef MOTION_DEMO_H
 #define MOTION_DEMO_H
 
+#include <stdbool.h>
+
 #include "lvgl.h"
 
 #define MOTION_DEMO_KEY_ADD 0x10001U
@@ -14,5 +16,6 @@
 void motion_demo_create(lv_obj_t * parent);
 void motion_demo_handle_key(uint32_t key);
 void motion_demo_tick(uint32_t now_ms);
+bool motion_demo_smoke_check(void);
 
 #endif

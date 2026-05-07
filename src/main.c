@@ -2,6 +2,7 @@
 
 #include <SDL2/SDL.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include "motion_demo.h"
 
 #ifdef _WIN32
@@ -247,6 +248,10 @@ int main(int argc, char ** argv)
     }
 
     motion_demo_create(lv_screen_active());
+
+    if(getenv("LVGL_MOTION_SMOKE") != NULL) {
+        return motion_demo_smoke_check() ? 0 : 2;
+    }
 
     while(g_running) {
         motion_demo_tick(SDL_GetTicks());

@@ -8,6 +8,10 @@
 
 #include "generated/logos.h"
 
+#if LV_USE_TINY_TTF
+#include "src/libs/tiny_ttf/lv_tiny_ttf.h"
+#endif
+
 typedef enum {
     STATUS_RUN,
     STATUS_CHECK,
@@ -48,7 +52,7 @@ enum {
     COPY_COUNT = 3,
     VIEW_COUNT = MAX_QUEUE_ITEMS * COPY_COUNT,
     MAX_DECISION_OPTIONS = 3,
-    OVERVIEW_VISIBLE_ROWS = 4,
+    OVERVIEW_VISIBLE_ROWS = 5,
     MIDDLE_COPY = 1,
     VISUAL_OFF = 0,
     VISUAL_OVERVIEW = 218,
@@ -62,6 +66,9 @@ enum {
     ANIM_DETAIL_MS = 360,
     ANIM_QUEUE_MS = 330,
     ANIM_PULSE_MS = 520,
+    OVERVIEW_ROW_HEIGHT = 88,
+    OVERVIEW_ROW_MIN_HEIGHT = 84,
+    OVERVIEW_ROW_MAX_HEIGHT = 92,
 };
 
 typedef struct {
@@ -69,6 +76,7 @@ typedef struct {
     const lv_image_dsc_t * logo;
     const char * title;
     StatusType status;
+    const char * summary;
     const char * detail;
     DecisionKind decision_kind;
     const char * decision_title;
@@ -86,6 +94,7 @@ typedef struct {
     const lv_image_dsc_t * logo;
     char title[112];
     StatusType status;
+    char summary[180];
     char detail[440];
     DecisionKind decision_kind;
     DecisionState decision_state;
@@ -107,9 +116,15 @@ typedef struct {
     lv_obj_t * card;
     lv_obj_t * row;
     lv_obj_t * logo;
+    lv_obj_t * text_column;
     lv_obj_t * title;
+    lv_obj_t * summary;
+    lv_obj_t * meta;
     lv_obj_t * status;
     lv_obj_t * status_label;
+    lv_obj_t * slash_label;
+    lv_obj_t * age;
+    lv_obj_t * age_label;
     lv_obj_t * detail;
     lv_obj_t * detail_title;
     lv_obj_t * detail_label;
@@ -157,6 +172,14 @@ typedef struct {
 
 static DemoState g_demo;
 
+static const lv_font_t * g_font_title = &lv_font_montserrat_24;
+static const lv_font_t * g_font_summary = &lv_font_montserrat_16;
+static const lv_font_t * g_font_capsule = &lv_font_montserrat_14;
+static const lv_font_t * g_font_slash = &lv_font_montserrat_22;
+static const lv_font_t * g_font_detail = &lv_font_montserrat_18;
+static const lv_font_t * g_font_detail_title = &lv_font_montserrat_22;
+static const lv_font_t * g_font_decision_result = &lv_font_montserrat_14;
+
 static void detail_exec_cb(void * var, int32_t value);
 static void card_visual_exec_cb(void * var, int32_t value);
 static void transition_exec_cb(void * var, int32_t value);
@@ -173,9 +196,10 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
     {
         "Claude",
         &logo_claude,
-        "Assembly handoff copy is being refined",
-        STATUS_RUN,
-        "Stage 3/5 is active. Claude is rewriting the operator prompt, checking missing sensor states, and merging fixture-ready, barcode, and torque hints into one short action. ETA 18 s, confidence 92%, small-screen summary is already prepared.",
+        "Solid-State Battery Market Analysis for Auto...",
+        STATUS_CHECK,
+        "Research complete. Comprehensive report generated...",
+        "Research complete. Comprehensive report generated with source notes and next action summary ready for review.",
         DECISION_NONE,
         "",
         "",
@@ -188,9 +212,10 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
     {
         "Gemini",
         &logo_gemini,
-        "Vision queue confidence needs review",
-        STATUS_CHECK,
-        "Gemini is comparing the visual inspection result with the latest material queue. Two images are below the confidence threshold, so the detail view keeps the failing crop, the recipe version, and the recommended operator decision in the same panel.",
+        "Pricing page with Stripe integration",
+        STATUS_ERR,
+        "Agent failed: TypeError: Cannot read properties of ...",
+        "Agent failed: TypeError: Cannot read properties of undefined during checkout wiring.",
         DECISION_OPTION_SELECT,
         "Choose inspection handling",
         "Two visual crops are below confidence threshold; tray id and recipe version still match the current queue.",
@@ -203,9 +228,10 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
     {
         "GPT",
         &logo_gpt,
-        "Station health summary is ready",
+        "Build /audit and /vulnerability-scan...",
         STATUS_DONE,
-        "GPT grouped two station warnings into a single operator action and removed duplicate prompts during the queue switch. The large screen can show root cause, affected station, and the next safe resume point without opening another page.",
+        "Claude Code wants to run: git commit -m \"feat:...",
+        "Claude Code wants to run: git commit -m \"feat: add security audit workflow\"",
         DECISION_NONE,
         "",
         "",
@@ -218,9 +244,10 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
     {
         "DeepSeek",
         &logo_deepseek,
-        "Fallback route waits for downstream station",
-        STATUS_WAIT,
-        "DeepSeek has planned a low-latency fallback path, but the downstream fixture has not reported availability. The item stays warm in the carousel, preserving the last valid path, blocked station, and retry window.",
+        "Extract the discount calculation...",
+        STATUS_RUN,
+        "Running Bash tool: pytest tests/billing/ (5 test...",
+        "Running Bash tool: pytest tests/billing/ (5 tests still streaming)",
         DECISION_NONE,
         "",
         "",
@@ -233,9 +260,10 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
     {
         "Claude",
         &logo_claude,
-        "Manual assist recovery prompt is blocked",
-        STATUS_ERR,
-        "A torque reading stayed outside the expected band for three samples. The card preserves the last successful step, highlights the abnormal axis, and asks the operator to confirm whether the fixture can be released.",
+        "LLM Reasoning Capabilities Meta-Analysis",
+        STATUS_RUN,
+        "Reading arxiv.org... (Consulted 28 sources so far)",
+        "Reading arxiv.org... (Consulted 28 sources so far)",
         DECISION_ACKNOWLEDGE,
         "Confirm recovery path",
         "Torque stayed outside the expected band for three consecutive samples after retry.",
@@ -250,6 +278,7 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
         &logo_gemini,
         "Material readiness ranking is updating",
         STATUS_RUN,
+        "Ranking tray readiness and downstream idle time...",
         "Gemini is ranking queued tasks by tray readiness, fixture occupancy, and downstream idle time. The next task candidate is promoted only when all three checks agree, keeping queue motion smooth during rapid task changes.",
         DECISION_NONE,
         "",
@@ -265,6 +294,7 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
         &logo_gpt,
         "Release checklist is under verification",
         STATUS_CHECK,
+        "Verifying release checklist against current recipe...",
         "GPT is verifying the release checklist against the current product recipe, the last station state, and the operator acknowledgement history. Failed checks remain grouped by station so the intervention flow stays readable.",
         DECISION_COMMAND_PERMISSION,
         "Approve release checklist command",
@@ -280,6 +310,7 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
         &logo_deepseek,
         "Dashboard event history has been compressed",
         STATUS_DONE,
+        "Compressed event history for task dashboard...",
         "DeepSeek compressed the event history into a short block for the task dashboard and a compact reminder for the square screen. The detail keeps the original timestamp range, severity count, and selected recovery action.",
         DECISION_NONE,
         "",
@@ -336,9 +367,9 @@ static const char * status_text(StatusType status)
     switch(status) {
         case STATUS_RUN: return "RUN";
         case STATUS_CHECK: return "CHECK";
-        case STATUS_DONE: return "DONE";
+        case STATUS_DONE: return "APPROVE";
         case STATUS_WAIT: return "WAIT";
-        case STATUS_ERR: return "ERR";
+        case STATUS_ERR: return "ERROR";
         default: return "?";
     }
 }
@@ -346,12 +377,30 @@ static const char * status_text(StatusType status)
 static lv_color_t status_color(StatusType status)
 {
     switch(status) {
-        case STATUS_RUN: return color_hex(0x18C8B7);
-        case STATUS_CHECK: return color_hex(0xF1B84B);
-        case STATUS_DONE: return color_hex(0x45D483);
-        case STATUS_WAIT: return color_hex(0xA78BFA);
-        case STATUS_ERR: return color_hex(0xF45B78);
+        case STATUS_RUN: return color_hex(0x4A8BC5);
+        case STATUS_CHECK: return color_hex(0xF1F1F0);
+        case STATUS_DONE: return color_hex(0x267A4B);
+        case STATUS_WAIT: return color_hex(0x4A8BC5);
+        case STATUS_ERR: return color_hex(0xC43B35);
         default: return color_hex(0x8B96A8);
+    }
+}
+
+static lv_color_t status_text_color(StatusType status)
+{
+    return status == STATUS_CHECK ? color_hex(0x202020) : color_hex(0xF1F2F2);
+}
+
+static const char * task_age_text(const TaskModel * task)
+{
+    if(task == NULL) return "";
+    switch(task->status) {
+        case STATUS_CHECK: return "6m";
+        case STATUS_ERR: return "6m";
+        case STATUS_DONE: return "24m";
+        case STATUS_WAIT: return "8m";
+        case STATUS_RUN:
+        default: return task->logo == &logo_gpt ? "16m" : "8m";
     }
 }
 
@@ -439,6 +488,7 @@ static void assign_template(TaskModel * task, const TaskTemplate * tmpl, uint32_
     copy_text(task->agent, sizeof(task->agent), tmpl->agent);
     task->logo = tmpl->logo;
     copy_text(task->title, sizeof(task->title), tmpl->title);
+    copy_text(task->summary, sizeof(task->summary), tmpl->summary);
     copy_text(task->detail, sizeof(task->detail), tmpl->detail);
     task->status = tmpl->status;
     task->decision_kind = tmpl->decision_kind;
@@ -552,34 +602,30 @@ static void set_card_style(ItemView * view)
 
     int32_t visual = overview ? VISUAL_OVERVIEW : clamp_i32(view->visual, VISUAL_OFF, VISUAL_ON);
     int32_t transition = clamp_i32(view->transition, TRANSITION_OFF, TRANSITION_ON);
-    uint8_t mix = (uint8_t)((visual * 255) / VISUAL_ON);
-    lv_color_t base = expanded ? color_hex(0x1C2532) : color_hex(0x151B23);
-    lv_color_t focus_color = color_hex(0x202C3C);
-    lv_color_t card_color = lv_color_mix(focus_color, base, mix);
-    int32_t base_scale = overview ? 256 : 242 + ((14 * visual) / VISUAL_ON);
-    int32_t enter_scale = 218 + ((38 * transition) / TRANSITION_ON);
+    int32_t base_scale = overview ? 256 : 248 + ((8 * visual) / VISUAL_ON);
+    int32_t enter_scale = 236 + ((20 * transition) / TRANSITION_ON);
     int32_t scale = overview ? enter_scale : LV_MIN(base_scale, enter_scale);
-    int32_t opacity = (150 + ((105 * visual) / VISUAL_ON)) * transition / TRANSITION_ON;
-    int32_t shadow_width = 2 + ((12 * visual) / VISUAL_ON) + (view->pulse / 28);
-    int32_t border_opa = 34 + ((76 * visual) / VISUAL_ON) + (view->pulse / 3);
-    lv_color_t border_color = color_hex(0x2E3B4E);
+    int32_t opacity = (180 + ((75 * visual) / VISUAL_ON)) * transition / TRANSITION_ON;
+    int32_t bg_opa = expanded ? 58 : (focused ? 32 : (notified ? 12 : 0));
+    int32_t border_opa = expanded ? 78 : (focused ? 52 : 0);
+    int32_t pulse_opa = view->pulse / 3;
+    lv_color_t accent = task != NULL ? status_color(task->status) : color_hex(0x2E3B4E);
 
-    if(task != NULL && (notified || view->pulse > 0)) {
-        border_color = status_color(task->status);
-        border_opa += notified ? 68 : 0;
-        shadow_width += notified ? 3 : 0;
-    }
-    if(focused) {
-        border_opa += 30;
-    }
-
-    lv_obj_set_style_bg_color(view->card, card_color, 0);
+    lv_obj_set_style_bg_color(view->card, expanded ? color_hex(0x202427) : color_hex(0x1A1D1C), 0);
+    lv_obj_set_style_bg_opa(view->card, (lv_opa_t)clamp_i32(bg_opa + pulse_opa, LV_OPA_TRANSP, LV_OPA_80), 0);
     lv_obj_set_style_transform_scale_x(view->card, scale, 0);
     lv_obj_set_style_transform_scale_y(view->card, scale, 0);
-    lv_obj_set_style_shadow_width(view->card, shadow_width, 0);
-    lv_obj_set_style_border_color(view->card, border_color, 0);
+    lv_obj_set_style_shadow_width(view->card, focused || expanded ? 10 : 0, 0);
+    lv_obj_set_style_border_color(view->card, accent, 0);
     lv_obj_set_style_border_opa(view->card, (lv_opa_t)clamp_i32(border_opa, LV_OPA_TRANSP, LV_OPA_COVER), 0);
     lv_obj_set_style_opa(view->card, (lv_opa_t)clamp_i32(opacity, LV_OPA_TRANSP, LV_OPA_COVER), 0);
+    if(task != NULL) {
+        int32_t capsule_scale = 256 + (view->pulse / 18);
+        lv_obj_set_style_transform_scale_x(view->status, capsule_scale, 0);
+        lv_obj_set_style_transform_scale_y(view->status, capsule_scale, 0);
+        lv_obj_set_style_transform_scale_x(view->age, capsule_scale, 0);
+        lv_obj_set_style_transform_scale_y(view->age, capsule_scale, 0);
+    }
 }
 
 static int32_t target_visual_for_view(int32_t view_index)
@@ -729,6 +775,10 @@ static void bind_status(ItemView * view, const TaskModel * task)
 {
     lv_label_set_text(view->status_label, status_text(task->status));
     lv_obj_set_style_bg_color(view->status, status_color(task->status), 0);
+    lv_obj_set_style_text_color(view->status_label, status_text_color(task->status), 0);
+    lv_label_set_text(view->age_label, task_age_text(task));
+    lv_obj_set_style_bg_color(view->age, status_color(task->status), 0);
+    lv_obj_set_style_text_color(view->age_label, status_text_color(task->status), 0);
 }
 
 static void set_hidden(lv_obj_t * obj, bool hidden)
@@ -852,7 +902,7 @@ static void hide_view(ItemView * view)
     lv_obj_set_height(view->detail, 0);
     lv_obj_add_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_height(view->card, LV_SIZE_CONTENT);
-    lv_obj_set_width(view->card, lv_pct(90));
+    lv_obj_set_width(view->card, lv_pct(100));
     lv_obj_add_flag(view->card, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -866,14 +916,12 @@ static void apply_overview_row_metrics(void)
 
     int32_t list_gap = lv_obj_get_style_pad_row(g_demo.list, 0);
     int32_t list_pad_top = lv_obj_get_style_pad_top(g_demo.list, 0);
-    int32_t card_pad_top = lv_obj_get_style_pad_top(g_demo.views[0].card, 0);
-    int32_t card_pad_bottom = lv_obj_get_style_pad_bottom(g_demo.views[0].card, 0);
+    int32_t list_pad_bottom = lv_obj_get_style_pad_bottom(g_demo.list, 0);
 
     int32_t visible_gaps = (OVERVIEW_VISIBLE_ROWS - 1) * list_gap;
-    int32_t available = list_h - list_pad_top - visible_gaps;
-    int32_t target_card_h = available > 0 ? available / OVERVIEW_VISIBLE_ROWS : 0;
-    int32_t row_min_h = target_card_h - card_pad_top - card_pad_bottom;
-    row_min_h = LV_MAX(row_min_h, 52);
+    int32_t available = list_h - list_pad_top - list_pad_bottom - visible_gaps;
+    int32_t row_min_h = available > 0 ? available / OVERVIEW_VISIBLE_ROWS : 0;
+    row_min_h = clamp_i32(row_min_h, OVERVIEW_ROW_MIN_HEIGHT, OVERVIEW_ROW_MAX_HEIGHT);
 
     for(int32_t i = 0; i < VIEW_COUNT; ++i) {
         lv_obj_set_style_min_height(g_demo.views[i].row, row_min_h, 0);
@@ -908,7 +956,10 @@ static void measure_and_apply_details(void)
         view->expanded_height = LV_MAX(natural_height, page_detail_h);
 
         detail_exec_cb(view, view->task_id == g_demo.expanded_id ? view->expanded_height : 0);
-        lv_obj_set_width(view->card, view->task_id == g_demo.expanded_id ? lv_pct(96) : lv_pct(90));
+        lv_obj_set_width(view->card, view->task_id == g_demo.expanded_id ? lv_pct(96) : lv_pct(100));
+        if(view->task_id != g_demo.expanded_id) {
+            lv_obj_set_height(view->card, OVERVIEW_ROW_HEIGHT);
+        }
     }
 }
 
@@ -939,10 +990,11 @@ static void bind_views_from_queue(uint32_t entering_id)
             lv_obj_clear_flag(view->card, LV_OBJ_FLAG_HIDDEN);
             lv_image_set_src(view->logo, task->logo);
             lv_label_set_text(view->title, task->title);
+            lv_label_set_text(view->summary, task->summary);
             bind_status(view, task);
             update_detail_content(view, task);
-            lv_obj_set_width(view->card, task->id == g_demo.expanded_id ? lv_pct(96) : lv_pct(90));
-            lv_obj_set_height(view->card, LV_SIZE_CONTENT);
+            lv_obj_set_width(view->card, task->id == g_demo.expanded_id ? lv_pct(96) : lv_pct(100));
+            lv_obj_set_height(view->card, task->id == g_demo.expanded_id ? LV_SIZE_CONTENT : OVERVIEW_ROW_HEIGHT);
             set_card_style(view);
         }
     }
@@ -1075,7 +1127,7 @@ static void animate_detail_for_id(uint32_t task_id, bool opening)
         if(!view->bound || view->task_id != task_id) continue;
 
         lv_anim_delete(view, detail_exec_cb);
-        lv_obj_set_width(view->card, opening ? lv_pct(96) : lv_pct(90));
+        lv_obj_set_width(view->card, opening ? lv_pct(96) : lv_pct(100));
 
         int32_t start = lv_obj_get_height(view->detail);
         int32_t end = opening ? view->expanded_height : 0;
@@ -1107,7 +1159,7 @@ static void set_expanded_id(uint32_t task_id, bool animate)
             for(int32_t i = 0; i < VIEW_COUNT; ++i) {
                 if(g_demo.views[i].bound && g_demo.views[i].task_id == old_id) {
                     detail_exec_cb(&g_demo.views[i], 0);
-                    lv_obj_set_width(g_demo.views[i].card, lv_pct(90));
+                    lv_obj_set_width(g_demo.views[i].card, lv_pct(100));
                 }
             }
         }
@@ -1664,6 +1716,86 @@ void motion_demo_tick(uint32_t now_ms)
     g_demo.auto_next_ms = now_ms + 1650;
 }
 
+bool motion_demo_smoke_check(void)
+{
+    if(g_demo.root == NULL || g_demo.list == NULL || g_demo.queue_count != TEMPLATE_COUNT) {
+        fprintf(stderr, "smoke: missing root/list or unexpected queue count\n");
+        return false;
+    }
+
+    uint32_t focused_before = g_demo.queue[logical_focus()].id;
+    int32_t count_before = g_demo.queue_count;
+    lv_obj_update_layout(g_demo.root);
+
+    for(int32_t i = 0; i < OVERVIEW_VISIBLE_ROWS; ++i) {
+        ItemView * view = &g_demo.views[view_index_for(0, i)];
+        if(!view->bound || lv_obj_has_flag(view->card, LV_OBJ_FLAG_HIDDEN)) {
+            fprintf(stderr, "smoke: initial row %d hidden\n", (int)i);
+            return false;
+        }
+        if(lv_obj_get_y(view->card) < 0) {
+            fprintf(stderr, "smoke: initial row %d y below 0\n", (int)i);
+            return false;
+        }
+        if(lv_obj_get_y(view->card) + lv_obj_get_height(view->card) > 480) {
+            fprintf(stderr, "smoke: initial row %d extends past viewport\n", (int)i);
+            return false;
+        }
+        if(lv_obj_get_x(view->meta) <= lv_obj_get_x(view->text_column)) {
+            fprintf(stderr, "smoke: initial row %d meta overlaps text column\n", (int)i);
+            return false;
+        }
+    }
+
+    motion_demo_handle_key(LV_KEY_DOWN);
+    motion_demo_handle_key(LV_KEY_ENTER);
+    motion_demo_handle_key(MOTION_DEMO_KEY_STATUS);
+    motion_demo_handle_key(MOTION_DEMO_KEY_ADD);
+
+    for(int32_t tick = 0; tick < 80 && g_demo.queue_mutation_busy; ++tick) {
+        lv_tick_inc(8);
+        lv_timer_handler();
+    }
+    lv_timer_handler();
+    lv_obj_update_layout(g_demo.root);
+
+    if(g_demo.queue_count != count_before + 1) {
+        fprintf(stderr, "smoke: add did not increase queue, count=%d busy=%d\n", (int)g_demo.queue_count, (int)g_demo.queue_mutation_busy);
+        return false;
+    }
+    if(g_demo.expanded_id == 0) {
+        fprintf(stderr, "smoke: enter did not expand focus\n");
+        return false;
+    }
+    if(g_demo.queue[logical_focus()].id == focused_before) {
+        fprintf(stderr, "smoke: down did not move focus\n");
+        return false;
+    }
+
+    int32_t visible_rows = 0;
+    for(int32_t i = 0; i < VIEW_COUNT; ++i) {
+        ItemView * view = &g_demo.views[i];
+        if(!view->bound || lv_obj_has_flag(view->card, LV_OBJ_FLAG_HIDDEN)) {
+            continue;
+        }
+        int32_t y = lv_obj_get_y(view->card) - lv_obj_get_scroll_y(g_demo.list);
+        if(y >= 0 && y < 480) {
+            ++visible_rows;
+            if(lv_obj_get_x(view->meta) + lv_obj_get_width(view->meta) > 800) {
+                fprintf(stderr, "smoke: final visible row %d meta past viewport\n", (int)i);
+                return false;
+            }
+        }
+    }
+
+    if(visible_rows <= 0) {
+        fprintf(stderr, "smoke: no visible rows after interactions\n");
+        return false;
+    }
+
+    return true;
+}
+
 static void style_plain_container(lv_obj_t * obj)
 {
     lv_obj_remove_style_all(obj);
@@ -1682,6 +1814,40 @@ static lv_obj_t * make_label(lv_obj_t * parent, const char * text, const lv_font
     return label;
 }
 
+static void init_reference_fonts(void)
+{
+#if LV_USE_TINY_TTF
+    static bool initialized;
+    static lv_font_t * title;
+    static lv_font_t * summary;
+    static lv_font_t * capsule;
+    static lv_font_t * slash;
+    static lv_font_t * detail;
+    static lv_font_t * detail_title;
+    static lv_font_t * decision_result;
+
+    if(initialized) return;
+    initialized = true;
+
+    const char * sf_path = "A:/System/Library/Fonts/SFNS.ttf";
+    title = lv_tiny_ttf_create_file_ex(sf_path, 24, 0, 256);
+    summary = lv_tiny_ttf_create_file_ex(sf_path, 17, 0, 256);
+    capsule = lv_tiny_ttf_create_file_ex(sf_path, 15, 0, 192);
+    slash = lv_tiny_ttf_create_file_ex(sf_path, 24, 0, 128);
+    detail = lv_tiny_ttf_create_file_ex(sf_path, 18, 0, 256);
+    detail_title = lv_tiny_ttf_create_file_ex(sf_path, 22, 0, 256);
+    decision_result = lv_tiny_ttf_create_file_ex(sf_path, 14, 0, 128);
+
+    if(title != NULL) g_font_title = title;
+    if(summary != NULL) g_font_summary = summary;
+    if(capsule != NULL) g_font_capsule = capsule;
+    if(slash != NULL) g_font_slash = slash;
+    if(detail != NULL) g_font_detail = detail;
+    if(detail_title != NULL) g_font_detail_title = detail_title;
+    if(decision_result != NULL) g_font_decision_result = decision_result;
+#endif
+}
+
 static lv_obj_t * create_status_capsule(lv_obj_t * parent)
 {
     lv_obj_t * capsule = lv_obj_create(parent);
@@ -1689,13 +1855,13 @@ static lv_obj_t * create_status_capsule(lv_obj_t * parent)
     lv_obj_set_height(capsule, LV_SIZE_CONTENT);
     lv_obj_set_width(capsule, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(capsule, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(capsule, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_pad_hor(capsule, 14, 0);
-    lv_obj_set_style_pad_ver(capsule, 5, 0);
+    lv_obj_set_style_radius(capsule, 8, 0);
+    lv_obj_set_style_pad_hor(capsule, 11, 0);
+    lv_obj_set_style_pad_ver(capsule, 4, 0);
     lv_obj_set_flex_flow(capsule, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(capsule, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    make_label(capsule, "RUN", &lv_font_montserrat_14, color_hex(0x071014));
+    make_label(capsule, "RUN", g_font_capsule, color_hex(0xF1F2F2));
     return capsule;
 }
 
@@ -1705,25 +1871,25 @@ static void create_view(size_t physical_index)
 
     lv_obj_t * card = lv_obj_create(g_demo.list);
     view->card = card;
-    lv_obj_set_width(card, lv_pct(90));
+    lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(card, color_hex(0x151B23), 0);
-    lv_obj_set_style_radius(card, 16, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(card, color_hex(0x1A1D1C), 0);
+    lv_obj_set_style_radius(card, 12, 0);
     lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, color_hex(0x2E3B4E), 0);
-    lv_obj_set_style_border_opa(card, 38, 0);
+    lv_obj_set_style_border_color(card, color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_opa(card, 0, 0);
     lv_obj_set_style_shadow_color(card, color_hex(0x000000), 0);
-    lv_obj_set_style_shadow_opa(card, LV_OPA_40, 0);
-    lv_obj_set_style_shadow_width(card, 4, 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_width(card, 0, 0);
     lv_obj_set_style_shadow_spread(card, 0, 0);
-    lv_obj_set_style_pad_left(card, 10, 0);
-    lv_obj_set_style_pad_right(card, 10, 0);
-    lv_obj_set_style_pad_top(card, 14, 0);
-    lv_obj_set_style_pad_bottom(card, 6, 0);
-    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_style_pad_left(card, 0, 0);
+    lv_obj_set_style_pad_right(card, 0, 0);
+    lv_obj_set_style_pad_top(card, 0, 0);
+    lv_obj_set_style_pad_bottom(card, 0, 0);
+    lv_obj_set_style_pad_row(card, 10, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t * row = lv_obj_create(card);
@@ -1731,22 +1897,47 @@ static void create_view(size_t physical_index)
     style_plain_container(row);
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, LV_SIZE_CONTENT);
-    lv_obj_set_style_min_height(row, 56, 0);
+    lv_obj_set_style_min_height(row, 52, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 16, 0);
 
     view->logo = lv_image_create(row);
     lv_obj_set_style_image_opa(view->logo, LV_OPA_COVER, 0);
+    lv_image_set_scale(view->logo, 244);
+    lv_obj_set_style_pad_left(view->logo, 0, 0);
 
-    view->title = make_label(row, "", &lv_font_montserrat_24, color_hex(0xF4F7FA));
+    view->text_column = lv_obj_create(row);
+    style_plain_container(view->text_column);
+    lv_obj_set_width(view->text_column, 0);
+    lv_obj_set_flex_grow(view->text_column, 1);
+    lv_obj_set_flex_flow(view->text_column, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(view->text_column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(view->text_column, 3, 0);
+
+    view->title = make_label(view->text_column, "", g_font_title, color_hex(0xF0F1EF));
     lv_label_set_long_mode(view->title, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(view->title, 0);
-    lv_obj_set_flex_grow(view->title, 1);
+    lv_obj_set_width(view->title, lv_pct(100));
     lv_obj_set_style_text_line_space(view->title, 0, 0);
 
-    view->status = create_status_capsule(row);
+    view->summary = make_label(view->text_column, "", g_font_summary, color_hex(0x969696));
+    lv_label_set_long_mode(view->summary, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(view->summary, lv_pct(100));
+    lv_obj_set_style_text_line_space(view->summary, 0, 0);
+
+    view->meta = lv_obj_create(row);
+    style_plain_container(view->meta);
+    lv_obj_set_width(view->meta, LV_SIZE_CONTENT);
+    lv_obj_set_height(view->meta, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(view->meta, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(view->meta, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(view->meta, 6, 0);
+
+    view->status = create_status_capsule(view->meta);
     view->status_label = lv_obj_get_child(view->status, 0);
+    view->slash_label = make_label(view->meta, "/", g_font_slash, color_hex(0xF1F2F2));
+    view->age = create_status_capsule(view->meta);
+    view->age_label = lv_obj_get_child(view->age, 0);
 
     lv_obj_t * detail = lv_obj_create(card);
     view->detail = detail;
@@ -1763,26 +1954,26 @@ static void create_view(size_t physical_index)
     lv_obj_set_style_pad_bottom(detail, 14, 0);
     lv_obj_set_style_pad_row(detail, 7, 0);
 
-    view->detail_label = make_label(detail, "", &lv_font_montserrat_18, color_hex(0xB8C1CF));
+    view->detail_label = make_label(detail, "", g_font_detail, color_hex(0xB8C1CF));
     lv_label_set_long_mode(view->detail_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(view->detail_label, lv_pct(100));
     lv_obj_set_style_text_line_space(view->detail_label, 4, 0);
 
-    view->detail_title = make_label(detail, "", &lv_font_montserrat_22, color_hex(0xF4F7FA));
+    view->detail_title = make_label(detail, "", g_font_detail_title, color_hex(0xF4F7FA));
     lv_label_set_long_mode(view->detail_title, LV_LABEL_LONG_DOT);
     lv_obj_set_width(view->detail_title, lv_pct(100));
 
-    view->evidence_label = make_label(detail, "", &lv_font_montserrat_16, color_hex(0xB8C1CF));
+    view->evidence_label = make_label(detail, "", g_font_summary, color_hex(0xB8C1CF));
     lv_label_set_long_mode(view->evidence_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(view->evidence_label, lv_pct(100));
     lv_obj_set_style_text_line_space(view->evidence_label, 3, 0);
 
-    view->recommendation_label = make_label(detail, "", &lv_font_montserrat_16, color_hex(0xA7F3D0));
+    view->recommendation_label = make_label(detail, "", g_font_summary, color_hex(0xA7F3D0));
     lv_label_set_long_mode(view->recommendation_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(view->recommendation_label, lv_pct(100));
     lv_obj_set_style_text_line_space(view->recommendation_label, 3, 0);
 
-    view->risk_label = make_label(detail, "", &lv_font_montserrat_16, color_hex(0xF8C77E));
+    view->risk_label = make_label(detail, "", g_font_summary, color_hex(0xF8C77E));
     lv_label_set_long_mode(view->risk_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(view->risk_label, lv_pct(100));
     lv_obj_set_style_text_line_space(view->risk_label, 3, 0);
@@ -1801,12 +1992,12 @@ static void create_view(size_t physical_index)
     lv_obj_set_style_pad_all(view->decision_card, 10, 0);
     lv_obj_set_style_pad_row(view->decision_card, 6, 0);
 
-    view->decision_action_label = make_label(view->decision_card, "", &lv_font_montserrat_16, color_hex(0xF4F7FA));
+    view->decision_action_label = make_label(view->decision_card, "", g_font_summary, color_hex(0xF4F7FA));
     lv_label_set_long_mode(view->decision_action_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(view->decision_action_label, lv_pct(100));
     lv_obj_set_style_text_line_space(view->decision_action_label, 3, 0);
 
-    view->decision_result_label = make_label(view->decision_card, "", &lv_font_montserrat_14, color_hex(0x8B96A8));
+    view->decision_result_label = make_label(view->decision_card, "", g_font_decision_result, color_hex(0x8B96A8));
     lv_label_set_long_mode(view->decision_result_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(view->decision_result_label, lv_pct(100));
 
@@ -1824,21 +2015,21 @@ static void init_queue(void)
         assign_template(&g_demo.queue[i], &k_templates[i], g_demo.next_id++);
     }
 
-    int32_t focus = find_default_focus_index();
-    if(focus < 0) focus = 0;
-    set_focus_to_logical(focus);
+    set_focus_to_logical(0);
     g_demo.expanded_id = 0;
 }
 
 void motion_demo_create(lv_obj_t * parent)
 {
+    init_reference_fonts();
+
     lv_obj_remove_style_all(parent);
     lv_obj_set_style_bg_color(parent, color_hex(0x0B0F14), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
     lv_obj_set_size(parent, lv_pct(100), lv_pct(100));
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(parent, 18, 0);
-    lv_obj_set_style_pad_row(parent, 10, 0);
+    lv_obj_set_style_pad_all(parent, 8, 0);
+    lv_obj_set_style_pad_row(parent, 0, 0);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_CLICKABLE);
 
     g_demo.root = parent;
@@ -1864,8 +2055,10 @@ void motion_demo_create(lv_obj_t * parent)
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(list, 8, 0);
-    lv_obj_set_style_pad_ver(list, 10, 0);
+    lv_obj_set_style_pad_row(list, 6, 0);
+    lv_obj_set_style_pad_ver(list, 0, 0);
+    lv_obj_set_style_pad_left(list, 8, 0);
+    lv_obj_set_style_pad_right(list, 4, 0);
 
     for(size_t i = 0; i < VIEW_COUNT; ++i) {
         create_view(i);
