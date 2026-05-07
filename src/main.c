@@ -9,8 +9,8 @@
 #include <windows.h>
 #endif
 
-#define WINDOW_WIDTH 960
-#define WINDOW_HEIGHT 400
+#define WINDOW_WIDTH 800
+#define WINDOW_HEIGHT 480
 #define FRAME_PERIOD_MS 8
 
 static bool g_running = true;

@@ -1,6 +1,6 @@
 # LVGL Motion Demo
 
-LVGL simulator demo for a 960x400 task-flow screen. The project is kept platform-neutral in CMake; Windows uses MSYS2 MinGW64 + SDL2, while macOS can build with Homebrew SDL2.
+LVGL simulator demo for an 800x480 task-flow screen. The project is kept platform-neutral in CMake; Windows uses MSYS2 MinGW64 + SDL2, while macOS can build with Homebrew SDL2.
 
 ## Build
 
@@ -66,5 +66,5 @@ cmake --build build
 - LVGL is fixed to `v9.5.0` through CMake `FetchContent`.
 - Layout uses LVGL flex, percent width, content size, and measured layout dimensions.
 - The code does not use `lv_obj_set_pos`, `lv_obj_set_x`, `lv_obj_set_y`, or `lv_obj_align`.
-- `960x400` is only used for SDL window creation, not for deriving widget positions.
+- `800x480` is only used for SDL window creation, not for deriving widget positions.
 - Logo source files are official-domain UI icons for prototype validation. See `assets/logos/source/README.md`.

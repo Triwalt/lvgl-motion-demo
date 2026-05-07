@@ -194,7 +194,7 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
         DECISION_OPTION_SELECT,
         "Choose inspection handling",
         "Two visual crops are below confidence threshold; tray id and recipe version still match the current queue.",
-        "Recommended: hold only the affected station and keep the rest of the queue moving.",
+        "Hold only the affected station and keep the rest of the queue moving.",
         "A full queue hold adds latency, while ignoring the check may pass an uncertain part downstream.",
         "",
         { "Hold affected station", "Full queue hold", "Continue with note" },
@@ -239,7 +239,7 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
         DECISION_ACKNOWLEDGE,
         "Confirm recovery path",
         "Torque stayed outside the expected band for three consecutive samples after retry.",
-        "Recommended: acknowledge manual recovery, keep the last safe step visible, then release the fixture after inspection.",
+        "Acknowledge manual recovery, keep the last safe step visible, then release the fixture after inspection.",
         "Deferring keeps the task waiting and prevents the route from being marked recoverable.",
         "",
         { "Acknowledge recovery", "Defer review", "" },
@@ -269,7 +269,7 @@ static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
         DECISION_COMMAND_PERMISSION,
         "Approve release checklist command",
         "Checklist failed on two acknowledgement records, but station state and product recipe are consistent.",
-        "Recommended: run the simulated checklist refresh and continue only if the command reports clean.",
+        "Run the simulated checklist refresh and continue only if the command reports clean.",
         "Rejecting leaves the queue in WAIT; approving is simulated here and does not execute a system command.",
         "agentctl refresh-checklist --station S2 --dry-run",
         { "Approve command", "Reject command", "" },
@@ -682,7 +682,7 @@ static int32_t current_item_scroll_target(int32_t view_index)
     int32_t collapsed_space = list_h - card_h;
     int32_t collapsed_offset = collapsed_space > 0 ? collapsed_space / 2 : 0;
     int32_t peek_space = list_h - card_h;
-    int32_t expanded_offset = peek_space > 0 ? peek_space / 3 : 0;
+    int32_t expanded_offset = peek_space > 0 ? peek_space / 2 : 0;
     int32_t detail_ref = view->expanded_height > 0 ? view->expanded_height : 1;
     int32_t mix = clamp_i32((detail_h * 256) / detail_ref, 0, 256);
     int32_t offset = collapsed_offset + (((expanded_offset - collapsed_offset) * mix) / 256);
@@ -701,7 +701,7 @@ static int32_t item_scroll_target_for_detail_height(int32_t view_index, int32_t 
     int32_t collapsed_space = list_h - card_h;
     int32_t collapsed_offset = collapsed_space > 0 ? collapsed_space / 2 : 0;
     int32_t peek_space = list_h - card_h;
-    int32_t expanded_offset = peek_space > 0 ? peek_space / 3 : 0;
+    int32_t expanded_offset = peek_space > 0 ? peek_space / 2 : 0;
     int32_t detail_ref = view->expanded_height > 0 ? view->expanded_height : 1;
     int32_t mix = clamp_i32((target_detail_height * 256) / detail_ref, 0, 256);
     int32_t offset = collapsed_offset + (((expanded_offset - collapsed_offset) * mix) / 256);
@@ -884,7 +884,7 @@ static void measure_and_apply_details(void)
 {
     lv_obj_update_layout(g_demo.root);
     int32_t list_h = lv_obj_get_height(g_demo.list);
-    int32_t target_card_h = list_h > 0 ? (list_h * 72) / 100 : 0;
+    int32_t target_card_h = list_h > 0 ? (list_h * 76) / 100 : 0;
 
     for(int32_t i = 0; i < VIEW_COUNT; ++i) {
         ItemView * view = &g_demo.views[i];
@@ -1757,8 +1757,8 @@ static void create_view(size_t physical_index)
     lv_obj_set_style_bg_color(detail, color_hex(0x202A37), 0);
     lv_obj_set_style_bg_opa(detail, LV_OPA_80, 0);
     lv_obj_set_style_radius(detail, 12, 0);
-    lv_obj_set_style_pad_left(detail, 64, 0);
-    lv_obj_set_style_pad_right(detail, 52, 0);
+    lv_obj_set_style_pad_left(detail, 52, 0);
+    lv_obj_set_style_pad_right(detail, 40, 0);
     lv_obj_set_style_pad_top(detail, 8, 0);
     lv_obj_set_style_pad_bottom(detail, 14, 0);
     lv_obj_set_style_pad_row(detail, 7, 0);
