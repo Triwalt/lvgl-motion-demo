@@ -602,9 +602,8 @@ static void set_card_style(ItemView * view)
 
     int32_t visual = overview ? VISUAL_OVERVIEW : clamp_i32(view->visual, VISUAL_OFF, VISUAL_ON);
     int32_t transition = clamp_i32(view->transition, TRANSITION_OFF, TRANSITION_ON);
-    int32_t base_scale = overview ? 256 : 248 + ((8 * visual) / VISUAL_ON);
     int32_t enter_scale = 236 + ((20 * transition) / TRANSITION_ON);
-    int32_t scale = overview ? enter_scale : LV_MIN(base_scale, enter_scale);
+    int32_t scale = transition < TRANSITION_ON ? enter_scale : 256;
     int32_t opacity = (180 + ((75 * visual) / VISUAL_ON)) * transition / TRANSITION_ON;
     int32_t bg_opa = expanded ? 58 : (focused ? 32 : (notified ? 12 : 0));
     int32_t border_opa = expanded ? 78 : (focused ? 52 : 0);
@@ -1218,6 +1217,7 @@ static void cancel_active_scroll_for_input(void)
 static void activate_focus(void)
 {
     if(!g_demo.focus_active) {
+        g_demo.focus_seq = logical_focus();
         g_demo.focus_active = true;
         g_demo.mode = MODE_NAVIGATING;
     }
@@ -1748,6 +1748,29 @@ bool motion_demo_smoke_check(void)
     }
 
     motion_demo_handle_key(LV_KEY_DOWN);
+    lv_timer_handler();
+    lv_obj_update_layout(g_demo.root);
+
+    if(g_demo.queue[logical_focus()].id == focused_before) {
+        fprintf(stderr, "smoke: down did not move focus\n");
+        return false;
+    }
+    if(copy_for_focus() != 0) {
+        fprintf(stderr, "smoke: first focused row jumped to copy %d\n", (int)copy_for_focus());
+        return false;
+    }
+
+    for(int32_t i = 0; i < VIEW_COUNT; ++i) {
+        ItemView * view = &g_demo.views[i];
+        if(!view->bound || lv_obj_has_flag(view->card, LV_OBJ_FLAG_HIDDEN) || view->task_id == g_demo.expanded_id) {
+            continue;
+        }
+        if(lv_obj_get_style_transform_scale_x(view->card, 0) != 256 || lv_obj_get_style_transform_scale_y(view->card, 0) != 256) {
+            fprintf(stderr, "smoke: focused state left collapsed row %d scaled\n", (int)i);
+            return false;
+        }
+    }
+
     motion_demo_handle_key(LV_KEY_ENTER);
     motion_demo_handle_key(MOTION_DEMO_KEY_STATUS);
     motion_demo_handle_key(MOTION_DEMO_KEY_ADD);
@@ -1765,10 +1788,6 @@ bool motion_demo_smoke_check(void)
     }
     if(g_demo.expanded_id == 0) {
         fprintf(stderr, "smoke: enter did not expand focus\n");
-        return false;
-    }
-    if(g_demo.queue[logical_focus()].id == focused_before) {
-        fprintf(stderr, "smoke: down did not move focus\n");
         return false;
     }
 
