@@ -877,96 +877,44 @@ static void bind_status(ItemView * view, const TaskModel * task)
     apply_status_effect(view, task);
 }
 
-static lv_point_t capsule_path_point(const lv_area_t * coords, int32_t inset, int32_t cursor, int32_t path_len)
+static void draw_run_scan_gradient(lv_layer_t * layer,
+                                   const lv_area_t * inner,
+                                   int32_t head,
+                                   int32_t cycle,
+                                   int32_t band_width,
+                                   lv_color_t color,
+                                   lv_opa_t max_opa,
+                                   int32_t strip_width,
+                                   int32_t radius)
 {
-    lv_point_t point = { .x = 0, .y = 0 };
-    if(coords == NULL || path_len <= 0) return point;
-    point.x = coords->x1;
-    point.y = coords->y1;
+    if(layer == NULL || inner == NULL || cycle <= 0 || band_width <= 0) return;
 
-    int32_t width = lv_area_get_width(coords);
-    int32_t height = lv_area_get_height(coords);
-    int32_t radius = LV_MAX(1, (height / 2) - inset);
-    int32_t left = coords->x1 + inset + radius;
-    int32_t right = coords->x2 - inset - radius;
-    int32_t top = coords->y1 + inset;
-    int32_t bottom = coords->y2 - inset;
-    int32_t center_y = coords->y1 + height / 2;
-    int32_t straight = LV_MAX(1, right - left);
-    int32_t arc_len = LV_MAX(1, (314 * radius) / 100);
-    int32_t pos = positive_mod_i32(cursor, path_len);
+    int32_t half = LV_MAX(1, band_width / 2);
+    int32_t sample_offset = half;
+    for(int32_t x = inner->x1; x <= inner->x2; x += strip_width) {
+        int32_t sample = (x - inner->x1) + sample_offset;
+        int32_t dist = cyclic_distance_i32(sample, head, cycle);
+        if(dist > half) continue;
 
-    if(pos < straight) {
-        point.x = left + pos;
-        point.y = top;
-        return point;
+        int32_t fade = 255 - ((dist * 255) / half);
+        int32_t eased = (fade * fade) / 255;
+        lv_opa_t opa = (lv_opa_t)clamp_i32(((int32_t)max_opa * eased) / 255, LV_OPA_TRANSP, LV_OPA_COVER);
+        if(opa <= LV_OPA_TRANSP) continue;
+
+        lv_area_t strip = {
+            .x1 = x,
+            .x2 = LV_MIN(x + strip_width - 1, inner->x2),
+            .y1 = inner->y1,
+            .y2 = inner->y2,
+        };
+        lv_draw_fill_dsc_t fill_dsc;
+        lv_draw_fill_dsc_init(&fill_dsc);
+        fill_dsc.base.layer = layer;
+        fill_dsc.color = color;
+        fill_dsc.opa = opa;
+        fill_dsc.radius = radius;
+        lv_draw_fill(layer, &fill_dsc, &strip);
     }
-
-    pos -= straight;
-    if(pos < arc_len) {
-        int32_t angle = 270 + ((pos * 180) / arc_len);
-        point.x = right + ((radius * lv_trigo_cos((int16_t)angle)) >> LV_TRIGO_SHIFT);
-        point.y = center_y + ((radius * lv_trigo_sin((int16_t)angle)) >> LV_TRIGO_SHIFT);
-        return point;
-    }
-
-    pos -= arc_len;
-    if(pos < straight) {
-        point.x = right - pos;
-        point.y = bottom;
-        return point;
-    }
-
-    pos -= straight;
-    int32_t angle = 90 + ((pos * 180) / arc_len);
-    point.x = left + ((radius * lv_trigo_cos((int16_t)angle)) >> LV_TRIGO_SHIFT);
-    point.y = center_y + ((radius * lv_trigo_sin((int16_t)angle)) >> LV_TRIGO_SHIFT);
-    return point;
-}
-
-static int32_t capsule_scan_path_len(const lv_area_t * coords, int32_t inset)
-{
-    int32_t width = lv_area_get_width(coords);
-    int32_t height = lv_area_get_height(coords);
-    int32_t radius = LV_MAX(1, (height / 2) - inset);
-    int32_t straight = LV_MAX(1, width - (2 * inset) - (2 * radius));
-    int32_t arc_len = LV_MAX(1, (314 * radius) / 100);
-    return (2 * straight) + (2 * arc_len);
-}
-
-static void draw_run_scan_segment(lv_layer_t * layer,
-                                  const lv_area_t * coords,
-                                  int32_t inset,
-                                  int32_t path_len,
-                                  int32_t head,
-                                  int32_t cursor,
-                                  int32_t trail_span,
-                                  lv_color_t color,
-                                  lv_opa_t opa)
-{
-    if(layer == NULL || coords == NULL || path_len <= 0) return;
-
-    int32_t dist = cyclic_distance_i32(cursor, head, path_len);
-    if(dist > trail_span) return;
-
-    int32_t fade = 255 - ((dist * 210) / trail_span);
-    int32_t span = LV_MAX(3, 7 - (dist * 3) / trail_span);
-    lv_point_t p1 = capsule_path_point(coords, inset, cursor, path_len);
-    lv_point_t p2 = capsule_path_point(coords, inset, cursor + span, path_len);
-
-    lv_draw_line_dsc_t line_dsc;
-    lv_draw_line_dsc_init(&line_dsc);
-    line_dsc.base.layer = layer;
-    line_dsc.color = color;
-    line_dsc.width = inset;
-    line_dsc.opa = (lv_opa_t)clamp_i32(((int32_t)opa * fade) / 255, LV_OPA_TRANSP, LV_OPA_COVER);
-    line_dsc.round_start = 1;
-    line_dsc.round_end = 1;
-    line_dsc.p1.x = p1.x;
-    line_dsc.p1.y = p1.y;
-    line_dsc.p2.x = p2.x;
-    line_dsc.p2.y = p2.y;
-    lv_draw_line(layer, &line_dsc);
 }
 
 static void status_capsule_draw_event_cb(lv_event_t * e)
@@ -984,17 +932,23 @@ static void status_capsule_draw_event_cb(lv_event_t * e)
     int32_t height = lv_area_get_height(&coords);
     if(width < 18 || height < 14) return;
 
-    int32_t inset = effect->primary ? 3 : 2;
-    int32_t path_len = capsule_scan_path_len(&coords, inset);
-    int32_t head = run_scan_position(effect->now_ms, path_len, effect->primary);
-    int32_t trail_span = effect->primary ? LV_MAX(42, path_len / 3) : LV_MAX(28, path_len / 4);
-    lv_color_t glow = status_highlight_color(effect->status);
+    int32_t inset_x = effect->primary ? 2 : 2;
+    int32_t inset_y = effect->primary ? 3 : 4;
+    lv_area_t inner = {
+        .x1 = coords.x1 + inset_x,
+        .x2 = coords.x2 - inset_x,
+        .y1 = coords.y1 + inset_y,
+        .y2 = coords.y2 - inset_y,
+    };
+    int32_t inner_width = lv_area_get_width(&inner);
+    int32_t band_width = effect->primary ? LV_MAX(34, inner_width / 2) : LV_MAX(24, (inner_width * 2) / 5);
+    int32_t cycle = inner_width + band_width;
+    int32_t head = run_scan_position(effect->now_ms, cycle, effect->primary);
+    lv_color_t glow = status_highlight_color(STATUS_RUN);
     lv_layer_t * layer = lv_event_get_layer(e);
 
-    for(int32_t dist = trail_span; dist >= 0; dist -= 5) {
-        int32_t cursor = positive_mod_i32(head - dist, path_len);
-        draw_run_scan_segment(layer, &coords, inset, path_len, head, cursor, trail_span, glow, LV_OPA_COVER);
-    }
+    draw_run_scan_gradient(layer, &inner, head, cycle, band_width, glow, effect->primary ? LV_OPA_60 : LV_OPA_40, 2, 5);
+    draw_run_scan_gradient(layer, &inner, head, cycle, band_width / 3, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, 2, 4);
 }
 
 static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
@@ -1287,7 +1241,7 @@ static bool status_effect_is_animating(ItemView * breathing_view, ItemView * run
         return false;
     }
     if(lv_obj_get_style_bg_grad_opa(run_view->status, 0) != LV_OPA_TRANSP) {
-        fprintf(stderr, "smoke: run scan should use path drawing, not sweep gradient\n");
+        fprintf(stderr, "smoke: run scan should use custom cyclic drawing, not style sweep gradient\n");
         return false;
     }
     return true;
