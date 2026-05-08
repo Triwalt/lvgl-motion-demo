@@ -694,11 +694,13 @@ static void detail_exec_cb(void * var, int32_t value)
     int32_t opacity = (value * LV_OPA_COVER) / target;
     if(value > 0 || view->task_id == g_demo.expanded_id) {
         lv_obj_clear_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(view->card, LV_SIZE_CONTENT);
     }
     lv_obj_set_height(view->detail, value);
     lv_obj_set_style_opa(view->detail, (lv_opa_t)clamp_i32(opacity, LV_OPA_TRANSP, LV_OPA_COVER), 0);
     if(value <= 0 && view->task_id != g_demo.expanded_id) {
         lv_obj_add_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(view->card, OVERVIEW_ROW_HEIGHT);
     }
     keep_focus_scroll_with_current_layout(view);
 }
@@ -955,7 +957,7 @@ static void measure_and_apply_details(void)
         view->expanded_height = LV_MAX(natural_height, page_detail_h);
 
         detail_exec_cb(view, view->task_id == g_demo.expanded_id ? view->expanded_height : 0);
-        lv_obj_set_width(view->card, view->task_id == g_demo.expanded_id ? lv_pct(96) : lv_pct(100));
+        lv_obj_set_width(view->card, lv_pct(100));
         if(view->task_id != g_demo.expanded_id) {
             lv_obj_set_height(view->card, OVERVIEW_ROW_HEIGHT);
         }
@@ -992,7 +994,7 @@ static void bind_views_from_queue(uint32_t entering_id)
             lv_label_set_text(view->summary, task->summary);
             bind_status(view, task);
             update_detail_content(view, task);
-            lv_obj_set_width(view->card, task->id == g_demo.expanded_id ? lv_pct(96) : lv_pct(100));
+            lv_obj_set_width(view->card, lv_pct(100));
             lv_obj_set_height(view->card, task->id == g_demo.expanded_id ? LV_SIZE_CONTENT : OVERVIEW_ROW_HEIGHT);
             set_card_style(view);
         }
@@ -1126,7 +1128,8 @@ static void animate_detail_for_id(uint32_t task_id, bool opening)
         if(!view->bound || view->task_id != task_id) continue;
 
         lv_anim_delete(view, detail_exec_cb);
-        lv_obj_set_width(view->card, opening ? lv_pct(96) : lv_pct(100));
+        lv_obj_set_width(view->card, lv_pct(100));
+        lv_obj_set_height(view->card, LV_SIZE_CONTENT);
 
         int32_t start = lv_obj_get_height(view->detail);
         int32_t end = opening ? view->expanded_height : 0;
@@ -1170,7 +1173,7 @@ static void set_expanded_id(uint32_t task_id, bool animate)
             for(int32_t i = 0; i < VIEW_COUNT; ++i) {
                 if(g_demo.views[i].bound && g_demo.views[i].task_id == task_id) {
                     detail_exec_cb(&g_demo.views[i], g_demo.views[i].expanded_height);
-                    lv_obj_set_width(g_demo.views[i].card, lv_pct(96));
+                    lv_obj_set_width(g_demo.views[i].card, lv_pct(100));
                 }
             }
         }
@@ -1788,6 +1791,29 @@ bool motion_demo_smoke_check(void)
     }
     if(g_demo.expanded_id == 0) {
         fprintf(stderr, "smoke: enter did not expand focus\n");
+        return false;
+    }
+    ItemView * expanded_view = &g_demo.views[focused_view_index()];
+    if(!expanded_view->bound || expanded_view->task_id != g_demo.expanded_id) {
+        fprintf(stderr, "smoke: focused view is not the expanded task\n");
+        return false;
+    }
+    int32_t list_content_w = lv_obj_get_width(g_demo.list) -
+                             lv_obj_get_style_pad_left(g_demo.list, 0) -
+                             lv_obj_get_style_pad_right(g_demo.list, 0);
+    if(lv_obj_get_width(expanded_view->card) != list_content_w) {
+        fprintf(stderr, "smoke: expanded card width %d does not match list content width %d\n",
+                (int)lv_obj_get_width(expanded_view->card),
+                (int)list_content_w);
+        return false;
+    }
+    if(lv_obj_get_x(expanded_view->detail) < 0 ||
+       lv_obj_get_x(expanded_view->detail) + lv_obj_get_width(expanded_view->detail) > lv_obj_get_width(expanded_view->card)) {
+        fprintf(stderr, "smoke: expanded detail escapes card width\n");
+        return false;
+    }
+    if(lv_obj_get_x(expanded_view->meta) + lv_obj_get_width(expanded_view->meta) > lv_obj_get_width(expanded_view->row)) {
+        fprintf(stderr, "smoke: expanded meta escapes row width\n");
         return false;
     }
 
