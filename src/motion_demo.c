@@ -69,8 +69,10 @@ enum {
     OVERVIEW_ROW_HEIGHT = 88,
     OVERVIEW_ROW_MIN_HEIGHT = 84,
     OVERVIEW_ROW_MAX_HEIGHT = 92,
-    ROW_CONTENT_Y_ADJUST = -4,
+    ROW_CONTENT_TRANSLATE_Y = -24,
+    ROW_CONTENT_CENTER_TARGET_Y = -12,
     ROW_CONTENT_CENTER_TOLERANCE = 2,
+    ROW_TEXT_GLYPH_TRANSLATE_Y = -3,
     CARD_BORDER_WIDTH = 2,
     CARD_BORDER_OPA_BASE = 34,
     CARD_BORDER_OPA_OVERVIEW = 48,
@@ -944,21 +946,23 @@ static void apply_overview_row_metrics(void)
 
 static int32_t visual_center_y(const lv_obj_t * obj)
 {
-    return lv_obj_get_y(obj) + lv_obj_get_height(obj) / 2;
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    return coords.y1 + lv_obj_get_height(obj) / 2;
 }
 
 static bool row_content_is_vertically_balanced(const ItemView * view, const char * part, const lv_obj_t * obj)
 {
-    int32_t row_center = lv_obj_get_y(view->row) + lv_obj_get_height(view->row) / 2;
+    int32_t row_center = visual_center_y(view->row);
     int32_t content_center = visual_center_y(obj);
     int32_t delta = content_center - row_center;
-    if(delta < ROW_CONTENT_Y_ADJUST - ROW_CONTENT_CENTER_TOLERANCE ||
-       delta > ROW_CONTENT_Y_ADJUST + ROW_CONTENT_CENTER_TOLERANCE) {
+    if(delta < ROW_CONTENT_CENTER_TARGET_Y - ROW_CONTENT_CENTER_TOLERANCE ||
+       delta > ROW_CONTENT_CENTER_TARGET_Y + ROW_CONTENT_CENTER_TOLERANCE) {
         fprintf(stderr, "smoke: row %d %s center is %dpx from row center, expected %dpx\n",
                 (int)view->logical_index,
                 part,
                 (int)delta,
-                (int)ROW_CONTENT_Y_ADJUST);
+                (int)ROW_CONTENT_CENTER_TARGET_Y);
         return false;
     }
     return true;
@@ -2001,7 +2005,7 @@ static void create_view(size_t physical_index)
     lv_obj_set_style_image_opa(view->logo, LV_OPA_COVER, 0);
     lv_image_set_scale(view->logo, 244);
     lv_obj_set_style_pad_left(view->logo, 0, 0);
-    lv_obj_set_style_translate_y(view->logo, ROW_CONTENT_Y_ADJUST, 0);
+    lv_obj_set_style_translate_y(view->logo, ROW_CONTENT_TRANSLATE_Y, 0);
 
     view->text_column = lv_obj_create(row);
     style_plain_container(view->text_column);
@@ -2010,17 +2014,19 @@ static void create_view(size_t physical_index)
     lv_obj_set_flex_flow(view->text_column, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(view->text_column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(view->text_column, 3, 0);
-    lv_obj_set_style_translate_y(view->text_column, ROW_CONTENT_Y_ADJUST, 0);
+    lv_obj_set_style_translate_y(view->text_column, ROW_CONTENT_TRANSLATE_Y, 0);
 
     view->title = make_label(view->text_column, "", g_font_title, color_hex(0xF0F1EF));
     lv_label_set_long_mode(view->title, LV_LABEL_LONG_DOT);
     lv_obj_set_width(view->title, lv_pct(100));
     lv_obj_set_style_text_line_space(view->title, 0, 0);
+    lv_obj_set_style_translate_y(view->title, ROW_TEXT_GLYPH_TRANSLATE_Y, 0);
 
     view->summary = make_label(view->text_column, "", g_font_summary, color_hex(0x969696));
     lv_label_set_long_mode(view->summary, LV_LABEL_LONG_DOT);
     lv_obj_set_width(view->summary, lv_pct(100));
     lv_obj_set_style_text_line_space(view->summary, 0, 0);
+    lv_obj_set_style_translate_y(view->summary, ROW_TEXT_GLYPH_TRANSLATE_Y, 0);
 
     view->meta = lv_obj_create(row);
     style_plain_container(view->meta);
@@ -2029,13 +2035,16 @@ static void create_view(size_t physical_index)
     lv_obj_set_flex_flow(view->meta, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(view->meta, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(view->meta, 6, 0);
-    lv_obj_set_style_translate_y(view->meta, ROW_CONTENT_Y_ADJUST, 0);
+    lv_obj_set_style_translate_y(view->meta, ROW_CONTENT_TRANSLATE_Y, 0);
 
     view->status = create_status_capsule(view->meta);
     view->status_label = lv_obj_get_child(view->status, 0);
+    lv_obj_set_style_translate_y(view->status_label, ROW_TEXT_GLYPH_TRANSLATE_Y, 0);
     view->slash_label = make_label(view->meta, "/", g_font_slash, color_hex(0xF1F2F2));
+    lv_obj_set_style_translate_y(view->slash_label, ROW_TEXT_GLYPH_TRANSLATE_Y, 0);
     view->age = create_status_capsule(view->meta);
     view->age_label = lv_obj_get_child(view->age, 0);
+    lv_obj_set_style_translate_y(view->age_label, ROW_TEXT_GLYPH_TRANSLATE_Y, 0);
 
     lv_obj_t * detail = lv_obj_create(card);
     view->detail = detail;
