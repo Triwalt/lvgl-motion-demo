@@ -69,6 +69,8 @@ enum {
     OVERVIEW_ROW_HEIGHT = 88,
     OVERVIEW_ROW_MIN_HEIGHT = 84,
     OVERVIEW_ROW_MAX_HEIGHT = 92,
+    ROW_CONTENT_Y_ADJUST = -4,
+    ROW_CONTENT_CENTER_TOLERANCE = 2,
 };
 
 typedef struct {
@@ -929,6 +931,28 @@ static void apply_overview_row_metrics(void)
     }
 }
 
+static int32_t visual_center_y(const lv_obj_t * obj)
+{
+    return lv_obj_get_y(obj) + lv_obj_get_height(obj) / 2;
+}
+
+static bool row_content_is_vertically_balanced(const ItemView * view, const char * part, const lv_obj_t * obj)
+{
+    int32_t row_center = lv_obj_get_y(view->row) + lv_obj_get_height(view->row) / 2;
+    int32_t content_center = visual_center_y(obj);
+    int32_t delta = content_center - row_center;
+    if(delta < ROW_CONTENT_Y_ADJUST - ROW_CONTENT_CENTER_TOLERANCE ||
+       delta > ROW_CONTENT_Y_ADJUST + ROW_CONTENT_CENTER_TOLERANCE) {
+        fprintf(stderr, "smoke: row %d %s center is %dpx from row center, expected %dpx\n",
+                (int)view->logical_index,
+                part,
+                (int)delta,
+                (int)ROW_CONTENT_Y_ADJUST);
+        return false;
+    }
+    return true;
+}
+
 static void measure_and_apply_details(void)
 {
     lv_obj_update_layout(g_demo.root);
@@ -1748,6 +1772,11 @@ bool motion_demo_smoke_check(void)
             fprintf(stderr, "smoke: initial row %d meta overlaps text column\n", (int)i);
             return false;
         }
+        if(!row_content_is_vertically_balanced(view, "logo", view->logo) ||
+           !row_content_is_vertically_balanced(view, "text", view->text_column) ||
+           !row_content_is_vertically_balanced(view, "meta", view->meta)) {
+            return false;
+        }
     }
 
     motion_demo_handle_key(LV_KEY_DOWN);
@@ -1814,6 +1843,11 @@ bool motion_demo_smoke_check(void)
     }
     if(lv_obj_get_x(expanded_view->meta) + lv_obj_get_width(expanded_view->meta) > lv_obj_get_width(expanded_view->row)) {
         fprintf(stderr, "smoke: expanded meta escapes row width\n");
+        return false;
+    }
+    if(!row_content_is_vertically_balanced(expanded_view, "logo", expanded_view->logo) ||
+       !row_content_is_vertically_balanced(expanded_view, "text", expanded_view->text_column) ||
+       !row_content_is_vertically_balanced(expanded_view, "meta", expanded_view->meta)) {
         return false;
     }
 
@@ -1951,6 +1985,7 @@ static void create_view(size_t physical_index)
     lv_obj_set_style_image_opa(view->logo, LV_OPA_COVER, 0);
     lv_image_set_scale(view->logo, 244);
     lv_obj_set_style_pad_left(view->logo, 0, 0);
+    lv_obj_set_style_translate_y(view->logo, ROW_CONTENT_Y_ADJUST, 0);
 
     view->text_column = lv_obj_create(row);
     style_plain_container(view->text_column);
@@ -1959,6 +1994,7 @@ static void create_view(size_t physical_index)
     lv_obj_set_flex_flow(view->text_column, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(view->text_column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(view->text_column, 3, 0);
+    lv_obj_set_style_translate_y(view->text_column, ROW_CONTENT_Y_ADJUST, 0);
 
     view->title = make_label(view->text_column, "", g_font_title, color_hex(0xF0F1EF));
     lv_label_set_long_mode(view->title, LV_LABEL_LONG_DOT);
@@ -1977,6 +2013,7 @@ static void create_view(size_t physical_index)
     lv_obj_set_flex_flow(view->meta, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(view->meta, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(view->meta, 6, 0);
+    lv_obj_set_style_translate_y(view->meta, ROW_CONTENT_Y_ADJUST, 0);
 
     view->status = create_status_capsule(view->meta);
     view->status_label = lv_obj_get_child(view->status, 0);
