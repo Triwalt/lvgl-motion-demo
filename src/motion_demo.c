@@ -177,6 +177,7 @@ typedef struct {
     InteractionMode mode;
     bool auto_enabled;
     uint32_t auto_next_ms;
+    uint32_t status_effect_now_ms;
     uint32_t entering_id;
     bool binding_views;
     bool anchor_scroll_active;
@@ -204,6 +205,7 @@ static void stop_view_animations(ItemView * view);
 static void stop_anchor_scroll(void);
 static void update_status_views_for_id(uint32_t task_id);
 static void apply_overview_row_metrics(void);
+static void apply_status_effect(ItemView * view, const TaskModel * task);
 
 static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
     {
@@ -397,6 +399,52 @@ static lv_color_t status_color(StatusType status)
         case STATUS_ERR: return color_hex(0xC43B35);
         default: return color_hex(0x8B96A8);
     }
+}
+
+static lv_color_t status_highlight_color(StatusType status)
+{
+    switch(status) {
+        case STATUS_RUN: return color_hex(0x8EC9FF);
+        case STATUS_CHECK: return color_hex(0xFFFFFF);
+        case STATUS_DONE: return color_hex(0x63D28E);
+        case STATUS_WAIT: return color_hex(0x7FB7EC);
+        case STATUS_ERR: return color_hex(0xFF8078);
+        default: return color_hex(0xDDE7F3);
+    }
+}
+
+static uint32_t status_effect_period_ms(StatusType status)
+{
+    switch(status) {
+        case STATUS_ERR: return 680;
+        case STATUS_CHECK: return 980;
+        case STATUS_RUN: return 1480;
+        case STATUS_WAIT: return 2200;
+        case STATUS_DONE:
+        default: return 2600;
+    }
+}
+
+static int32_t status_effect_strength(StatusType status)
+{
+    switch(status) {
+        case STATUS_ERR: return 118;
+        case STATUS_CHECK: return 56;
+        case STATUS_RUN: return 78;
+        case STATUS_WAIT: return 46;
+        case STATUS_DONE:
+        default: return 18;
+    }
+}
+
+static int32_t triangle_wave_u8(uint32_t now_ms, uint32_t period_ms)
+{
+    if(period_ms == 0) return 0;
+    uint32_t phase = now_ms % period_ms;
+    uint32_t half = period_ms / 2;
+    if(half == 0) return 0;
+    if(phase > half) phase = period_ms - phase;
+    return (int32_t)((phase * 255U) / half);
 }
 
 static lv_color_t status_text_color(StatusType status)
@@ -642,6 +690,7 @@ static void set_card_style(ItemView * view)
         lv_obj_set_style_transform_scale_y(view->status, capsule_scale, 0);
         lv_obj_set_style_transform_scale_x(view->age, capsule_scale, 0);
         lv_obj_set_style_transform_scale_y(view->age, capsule_scale, 0);
+        apply_status_effect(view, task);
     }
 }
 
@@ -798,6 +847,55 @@ static void bind_status(ItemView * view, const TaskModel * task)
     lv_label_set_text(view->age_label, task_age_text(task));
     lv_obj_set_style_bg_color(view->age, status_color(task->status), 0);
     lv_obj_set_style_text_color(view->age_label, status_text_color(task->status), 0);
+    apply_status_effect(view, task);
+}
+
+static void apply_capsule_effect(lv_obj_t * capsule, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
+{
+    lv_color_t color = status_color(status);
+    uint32_t period = status_effect_period_ms(status);
+    int32_t wave = triangle_wave_u8(now_ms, period);
+    int32_t glow = (strength * wave) / 255;
+    int32_t base_opa = status == STATUS_CHECK ? 230 : 220;
+    int32_t bg_lift = status == STATUS_CHECK ? glow / 8 : (primary ? glow / 3 : glow / 5);
+    int32_t shadow = primary ? 4 + glow / 8 : 2 + glow / 16;
+    int32_t shadow_opa = primary ? 24 + glow : 12 + glow / 2;
+    int32_t border_opa = primary ? 88 + glow : 48 + glow / 2;
+    int32_t sweep_stop = period > 0 ? (int32_t)(((now_ms % period) * 255U) / period) : 0;
+
+    lv_opa_t fill_opa = (lv_opa_t)clamp_i32(base_opa + bg_lift, LV_OPA_60, LV_OPA_COVER);
+    lv_obj_set_style_bg_color(capsule, color, 0);
+    lv_obj_set_style_bg_opa(capsule, fill_opa, 0);
+    lv_obj_set_style_bg_grad_color(capsule, status_highlight_color(status), 0);
+    lv_obj_set_style_bg_grad_dir(capsule, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_bg_main_stop(capsule, clamp_i32(sweep_stop - 40, 0, 255), 0);
+    lv_obj_set_style_bg_grad_stop(capsule, clamp_i32(sweep_stop + 40, 0, 255), 0);
+    lv_obj_set_style_bg_grad_opa(capsule, fill_opa, 0);
+    lv_obj_set_style_border_width(capsule, 1, 0);
+    lv_obj_set_style_border_color(capsule, color_hex(status == STATUS_CHECK ? 0xFFFFFF : 0xDDEEFF), 0);
+    lv_obj_set_style_border_opa(capsule, (lv_opa_t)clamp_i32(border_opa, LV_OPA_20, LV_OPA_COVER), 0);
+    lv_obj_set_style_shadow_color(capsule, color, 0);
+    lv_obj_set_style_shadow_width(capsule, shadow, 0);
+    lv_obj_set_style_shadow_opa(capsule, (lv_opa_t)clamp_i32(shadow_opa, LV_OPA_TRANSP, LV_OPA_80), 0);
+}
+
+static void apply_status_effect(ItemView * view, const TaskModel * task)
+{
+    if(view == NULL || task == NULL) return;
+
+    int32_t strength = status_effect_strength(task->status);
+    apply_capsule_effect(view->status, task->status, g_demo.status_effect_now_ms, strength, true);
+    apply_capsule_effect(view->age, task->status, g_demo.status_effect_now_ms + 180U, strength / 2, false);
+}
+
+static void refresh_status_effects(uint32_t now_ms)
+{
+    g_demo.status_effect_now_ms = now_ms;
+    for(int32_t i = 0; i < VIEW_COUNT; ++i) {
+        ItemView * view = &g_demo.views[i];
+        if(!view->bound || lv_obj_has_flag(view->card, LV_OBJ_FLAG_HIDDEN)) continue;
+        apply_status_effect(view, task_by_id(view->task_id));
+    }
 }
 
 static void set_hidden(lv_obj_t * obj, bool hidden)
@@ -1001,6 +1099,31 @@ static bool capsule_label_is_vertically_centered(const ItemView * view, const ch
                 (int)view->logical_index,
                 part,
                 (int)delta);
+        return false;
+    }
+    return true;
+}
+
+static bool status_effect_is_animating(ItemView * view)
+{
+    motion_demo_tick(120U);
+    lv_timer_handler();
+    lv_obj_update_layout(g_demo.root);
+    int32_t first_stop = lv_obj_get_style_bg_main_stop(view->status, 0);
+    lv_opa_t first_shadow = lv_obj_get_style_shadow_opa(view->status, 0);
+
+    motion_demo_tick(720U);
+    lv_timer_handler();
+    lv_obj_update_layout(g_demo.root);
+    int32_t second_stop = lv_obj_get_style_bg_main_stop(view->status, 0);
+    lv_opa_t second_shadow = lv_obj_get_style_shadow_opa(view->status, 0);
+
+    if(first_stop == second_stop && first_shadow == second_shadow) {
+        fprintf(stderr, "smoke: status effect did not animate\n");
+        return false;
+    }
+    if(lv_obj_get_style_bg_grad_opa(view->status, 0) == LV_OPA_TRANSP) {
+        fprintf(stderr, "smoke: status sweep gradient is invisible\n");
         return false;
     }
     return true;
@@ -1788,6 +1911,8 @@ static bool time_reached(uint32_t now_ms, uint32_t target_ms)
 
 void motion_demo_tick(uint32_t now_ms)
 {
+    refresh_status_effects(now_ms);
+
     if(!g_demo.auto_enabled || g_demo.busy || g_demo.deleting_id != 0 || g_demo.queue_mutation_busy || !time_reached(now_ms, g_demo.auto_next_ms)) {
         return;
     }
@@ -1840,6 +1965,10 @@ bool motion_demo_smoke_check(void)
            !capsule_label_is_vertically_centered(view, "age", view->age, view->age_label)) {
             return false;
         }
+    }
+
+    if(!status_effect_is_animating(&g_demo.views[view_index_for(0, 1)])) {
+        return false;
     }
 
     motion_demo_handle_key(LV_KEY_DOWN);
@@ -2007,6 +2136,7 @@ static lv_obj_t * create_status_capsule(lv_obj_t * parent)
     lv_obj_set_style_pad_ver(capsule, 4, 0);
     lv_obj_set_flex_flow(capsule, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(capsule, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_clip_corner(capsule, true, 0);
 
     make_label(capsule, "RUN", g_font_capsule, color_hex(0xF1F2F2));
     return capsule;
