@@ -71,6 +71,12 @@ enum {
     OVERVIEW_ROW_MAX_HEIGHT = 92,
     ROW_CONTENT_Y_ADJUST = -4,
     ROW_CONTENT_CENTER_TOLERANCE = 2,
+    CARD_BORDER_WIDTH = 2,
+    CARD_BORDER_OPA_BASE = 34,
+    CARD_BORDER_OPA_OVERVIEW = 48,
+    CARD_BORDER_OPA_NOTIFY = 78,
+    CARD_BORDER_OPA_FOCUSED = 132,
+    CARD_BORDER_OPA_EXPANDED = 158,
 };
 
 typedef struct {
@@ -608,16 +614,21 @@ static void set_card_style(ItemView * view)
     int32_t scale = transition < TRANSITION_ON ? enter_scale : 256;
     int32_t opacity = (180 + ((75 * visual) / VISUAL_ON)) * transition / TRANSITION_ON;
     int32_t bg_opa = expanded ? 58 : (focused ? 32 : (notified ? 12 : 0));
-    int32_t border_opa = expanded ? 78 : (focused ? 52 : 0);
+    int32_t border_opa = expanded ? CARD_BORDER_OPA_EXPANDED :
+                          (focused ? CARD_BORDER_OPA_FOCUSED :
+                           (notified ? CARD_BORDER_OPA_NOTIFY :
+                            (overview ? CARD_BORDER_OPA_OVERVIEW : CARD_BORDER_OPA_BASE)));
     int32_t pulse_opa = view->pulse / 3;
     lv_color_t accent = task != NULL ? status_color(task->status) : color_hex(0x2E3B4E);
+    lv_color_t border_color = focused || expanded || notified ? accent : color_hex(0x56606A);
 
     lv_obj_set_style_bg_color(view->card, expanded ? color_hex(0x202427) : color_hex(0x1A1D1C), 0);
     lv_obj_set_style_bg_opa(view->card, (lv_opa_t)clamp_i32(bg_opa + pulse_opa, LV_OPA_TRANSP, LV_OPA_80), 0);
     lv_obj_set_style_transform_scale_x(view->card, scale, 0);
     lv_obj_set_style_transform_scale_y(view->card, scale, 0);
-    lv_obj_set_style_shadow_width(view->card, focused || expanded ? 10 : 0, 0);
-    lv_obj_set_style_border_color(view->card, accent, 0);
+    lv_obj_set_style_shadow_width(view->card, focused || expanded ? 12 : 0, 0);
+    lv_obj_set_style_border_width(view->card, CARD_BORDER_WIDTH, 0);
+    lv_obj_set_style_border_color(view->card, border_color, 0);
     lv_obj_set_style_border_opa(view->card, (lv_opa_t)clamp_i32(border_opa, LV_OPA_TRANSP, LV_OPA_COVER), 0);
     lv_obj_set_style_opa(view->card, (lv_opa_t)clamp_i32(opacity, LV_OPA_TRANSP, LV_OPA_COVER), 0);
     if(task != NULL) {
@@ -1768,6 +1779,11 @@ bool motion_demo_smoke_check(void)
             fprintf(stderr, "smoke: initial row %d extends past viewport\n", (int)i);
             return false;
         }
+        if(lv_obj_get_style_border_width(view->card, 0) != CARD_BORDER_WIDTH ||
+           lv_obj_get_style_border_opa(view->card, 0) < CARD_BORDER_OPA_OVERVIEW) {
+            fprintf(stderr, "smoke: initial row %d border is too faint\n", (int)i);
+            return false;
+        }
         if(lv_obj_get_x(view->meta) <= lv_obj_get_x(view->text_column)) {
             fprintf(stderr, "smoke: initial row %d meta overlaps text column\n", (int)i);
             return false;
@@ -1955,9 +1971,9 @@ static void create_view(size_t physical_index)
     lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(card, color_hex(0x1A1D1C), 0);
     lv_obj_set_style_radius(card, 12, 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_border_opa(card, 0, 0);
+    lv_obj_set_style_border_width(card, CARD_BORDER_WIDTH, 0);
+    lv_obj_set_style_border_color(card, color_hex(0x56606A), 0);
+    lv_obj_set_style_border_opa(card, CARD_BORDER_OPA_BASE, 0);
     lv_obj_set_style_shadow_color(card, color_hex(0x000000), 0);
     lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
     lv_obj_set_style_shadow_width(card, 0, 0);
