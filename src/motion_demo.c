@@ -126,6 +126,13 @@ typedef struct {
 } TaskModel;
 
 typedef struct {
+    StatusType status;
+    uint32_t now_ms;
+    int32_t strength;
+    bool primary;
+} StatusCapsuleEffect;
+
+typedef struct {
     lv_obj_t * card;
     lv_obj_t * row;
     lv_obj_t * logo;
@@ -135,9 +142,11 @@ typedef struct {
     lv_obj_t * meta;
     lv_obj_t * status;
     lv_obj_t * status_label;
+    StatusCapsuleEffect status_effect;
     lv_obj_t * slash_label;
     lv_obj_t * age;
     lv_obj_t * age_label;
+    StatusCapsuleEffect age_effect;
     lv_obj_t * detail;
     lv_obj_t * detail_title;
     lv_obj_t * detail_label;
@@ -206,6 +215,7 @@ static void stop_anchor_scroll(void);
 static void update_status_views_for_id(uint32_t task_id);
 static void apply_overview_row_metrics(void);
 static void apply_status_effect(ItemView * view, const TaskModel * task);
+static void status_capsule_draw_event_cb(lv_event_t * e);
 
 static const TaskTemplate k_templates[TEMPLATE_COUNT] = {
     {
@@ -445,6 +455,23 @@ static int32_t triangle_wave_u8(uint32_t now_ms, uint32_t period_ms)
     if(half == 0) return 0;
     if(phase > half) phase = period_ms - phase;
     return (int32_t)((phase * 255U) / half);
+}
+
+static int32_t cyclic_distance_i32(int32_t a, int32_t b, int32_t cycle)
+{
+    if(cycle <= 0) return 0;
+    int32_t delta = abs_i32(positive_mod_i32(a, cycle) - positive_mod_i32(b, cycle));
+    return delta > cycle / 2 ? cycle - delta : delta;
+}
+
+static int32_t run_scan_position(uint32_t now_ms, int32_t path_len, bool primary)
+{
+    if(path_len <= 0) return 0;
+    uint32_t period = status_effect_period_ms(STATUS_RUN);
+    uint32_t phase = period > 0 ? now_ms % period : 0;
+    int32_t offset = primary ? 0 : path_len / 5;
+    int32_t scan = period > 0 ? (int32_t)((phase * (uint32_t)path_len) / period) : 0;
+    return positive_mod_i32(scan + offset, path_len);
 }
 
 static lv_color_t status_text_color(StatusType status)
@@ -850,33 +877,160 @@ static void bind_status(ItemView * view, const TaskModel * task)
     apply_status_effect(view, task);
 }
 
-static void apply_capsule_effect(lv_obj_t * capsule, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
+static lv_point_t capsule_path_point(const lv_area_t * coords, int32_t inset, int32_t cursor, int32_t path_len)
+{
+    lv_point_t point = { .x = 0, .y = 0 };
+    if(coords == NULL || path_len <= 0) return point;
+    point.x = coords->x1;
+    point.y = coords->y1;
+
+    int32_t width = lv_area_get_width(coords);
+    int32_t height = lv_area_get_height(coords);
+    int32_t radius = LV_MAX(1, (height / 2) - inset);
+    int32_t left = coords->x1 + inset + radius;
+    int32_t right = coords->x2 - inset - radius;
+    int32_t top = coords->y1 + inset;
+    int32_t bottom = coords->y2 - inset;
+    int32_t center_y = coords->y1 + height / 2;
+    int32_t straight = LV_MAX(1, right - left);
+    int32_t arc_len = LV_MAX(1, (314 * radius) / 100);
+    int32_t pos = positive_mod_i32(cursor, path_len);
+
+    if(pos < straight) {
+        point.x = left + pos;
+        point.y = top;
+        return point;
+    }
+
+    pos -= straight;
+    if(pos < arc_len) {
+        int32_t angle = 270 + ((pos * 180) / arc_len);
+        point.x = right + ((radius * lv_trigo_cos((int16_t)angle)) >> LV_TRIGO_SHIFT);
+        point.y = center_y + ((radius * lv_trigo_sin((int16_t)angle)) >> LV_TRIGO_SHIFT);
+        return point;
+    }
+
+    pos -= arc_len;
+    if(pos < straight) {
+        point.x = right - pos;
+        point.y = bottom;
+        return point;
+    }
+
+    pos -= straight;
+    int32_t angle = 90 + ((pos * 180) / arc_len);
+    point.x = left + ((radius * lv_trigo_cos((int16_t)angle)) >> LV_TRIGO_SHIFT);
+    point.y = center_y + ((radius * lv_trigo_sin((int16_t)angle)) >> LV_TRIGO_SHIFT);
+    return point;
+}
+
+static int32_t capsule_scan_path_len(const lv_area_t * coords, int32_t inset)
+{
+    int32_t width = lv_area_get_width(coords);
+    int32_t height = lv_area_get_height(coords);
+    int32_t radius = LV_MAX(1, (height / 2) - inset);
+    int32_t straight = LV_MAX(1, width - (2 * inset) - (2 * radius));
+    int32_t arc_len = LV_MAX(1, (314 * radius) / 100);
+    return (2 * straight) + (2 * arc_len);
+}
+
+static void draw_run_scan_segment(lv_layer_t * layer,
+                                  const lv_area_t * coords,
+                                  int32_t inset,
+                                  int32_t path_len,
+                                  int32_t head,
+                                  int32_t cursor,
+                                  int32_t trail_span,
+                                  lv_color_t color,
+                                  lv_opa_t opa)
+{
+    if(layer == NULL || coords == NULL || path_len <= 0) return;
+
+    int32_t dist = cyclic_distance_i32(cursor, head, path_len);
+    if(dist > trail_span) return;
+
+    int32_t fade = 255 - ((dist * 210) / trail_span);
+    int32_t span = LV_MAX(3, 7 - (dist * 3) / trail_span);
+    lv_point_t p1 = capsule_path_point(coords, inset, cursor, path_len);
+    lv_point_t p2 = capsule_path_point(coords, inset, cursor + span, path_len);
+
+    lv_draw_line_dsc_t line_dsc;
+    lv_draw_line_dsc_init(&line_dsc);
+    line_dsc.base.layer = layer;
+    line_dsc.color = color;
+    line_dsc.width = inset;
+    line_dsc.opa = (lv_opa_t)clamp_i32(((int32_t)opa * fade) / 255, LV_OPA_TRANSP, LV_OPA_COVER);
+    line_dsc.round_start = 1;
+    line_dsc.round_end = 1;
+    line_dsc.p1.x = p1.x;
+    line_dsc.p1.y = p1.y;
+    line_dsc.p2.x = p2.x;
+    line_dsc.p2.y = p2.y;
+    lv_draw_line(layer, &line_dsc);
+}
+
+static void status_capsule_draw_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if(code != LV_EVENT_DRAW_MAIN_END) return;
+
+    StatusCapsuleEffect * effect = (StatusCapsuleEffect *)lv_event_get_user_data(e);
+    if(effect == NULL || effect->status != STATUS_RUN) return;
+
+    lv_obj_t * capsule = lv_event_get_current_target_obj(e);
+    lv_area_t coords;
+    lv_obj_get_coords(capsule, &coords);
+    int32_t width = lv_area_get_width(&coords);
+    int32_t height = lv_area_get_height(&coords);
+    if(width < 18 || height < 14) return;
+
+    int32_t inset = effect->primary ? 3 : 2;
+    int32_t path_len = capsule_scan_path_len(&coords, inset);
+    int32_t head = run_scan_position(effect->now_ms, path_len, effect->primary);
+    int32_t trail_span = effect->primary ? LV_MAX(42, path_len / 3) : LV_MAX(28, path_len / 4);
+    lv_color_t glow = status_highlight_color(effect->status);
+    lv_layer_t * layer = lv_event_get_layer(e);
+
+    for(int32_t dist = trail_span; dist >= 0; dist -= 5) {
+        int32_t cursor = positive_mod_i32(head - dist, path_len);
+        draw_run_scan_segment(layer, &coords, inset, path_len, head, cursor, trail_span, glow, LV_OPA_COVER);
+    }
+}
+
+static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
 {
     lv_color_t color = status_color(status);
     uint32_t period = status_effect_period_ms(status);
     int32_t wave = triangle_wave_u8(now_ms, period);
     int32_t glow = (strength * wave) / 255;
     int32_t base_opa = status == STATUS_CHECK ? 230 : 220;
-    int32_t bg_lift = status == STATUS_CHECK ? glow / 8 : (primary ? glow / 3 : glow / 5);
+    int32_t bg_lift = status == STATUS_RUN ? (primary ? 12 : 7) :
+                      (status == STATUS_CHECK ? glow / 8 : (primary ? glow / 3 : glow / 5));
     int32_t shadow = primary ? 4 + glow / 8 : 2 + glow / 16;
     int32_t shadow_opa = primary ? 24 + glow : 12 + glow / 2;
     int32_t border_opa = primary ? 88 + glow : 48 + glow / 2;
-    int32_t sweep_stop = period > 0 ? (int32_t)(((now_ms % period) * 255U) / period) : 0;
-
     lv_opa_t fill_opa = (lv_opa_t)clamp_i32(base_opa + bg_lift, LV_OPA_60, LV_OPA_COVER);
     lv_obj_set_style_bg_color(capsule, color, 0);
     lv_obj_set_style_bg_opa(capsule, fill_opa, 0);
-    lv_obj_set_style_bg_grad_color(capsule, status_highlight_color(status), 0);
-    lv_obj_set_style_bg_grad_dir(capsule, LV_GRAD_DIR_HOR, 0);
-    lv_obj_set_style_bg_main_stop(capsule, clamp_i32(sweep_stop - 40, 0, 255), 0);
-    lv_obj_set_style_bg_grad_stop(capsule, clamp_i32(sweep_stop + 40, 0, 255), 0);
-    lv_obj_set_style_bg_grad_opa(capsule, fill_opa, 0);
+    lv_obj_set_style_bg_grad_color(capsule, color, 0);
+    lv_obj_set_style_bg_grad_dir(capsule, LV_GRAD_DIR_NONE, 0);
+    lv_obj_set_style_bg_main_stop(capsule, 0, 0);
+    lv_obj_set_style_bg_grad_stop(capsule, 255, 0);
+    lv_obj_set_style_bg_grad_opa(capsule, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(capsule, 1, 0);
     lv_obj_set_style_border_color(capsule, color_hex(status == STATUS_CHECK ? 0xFFFFFF : 0xDDEEFF), 0);
     lv_obj_set_style_border_opa(capsule, (lv_opa_t)clamp_i32(border_opa, LV_OPA_20, LV_OPA_COVER), 0);
     lv_obj_set_style_shadow_color(capsule, color, 0);
     lv_obj_set_style_shadow_width(capsule, shadow, 0);
     lv_obj_set_style_shadow_opa(capsule, (lv_opa_t)clamp_i32(shadow_opa, LV_OPA_TRANSP, LV_OPA_80), 0);
+
+    if(effect != NULL) {
+        effect->status = status;
+        effect->now_ms = now_ms;
+        effect->strength = strength;
+        effect->primary = primary;
+    }
+    lv_obj_invalidate(capsule);
 }
 
 static void apply_status_effect(ItemView * view, const TaskModel * task)
@@ -884,8 +1038,8 @@ static void apply_status_effect(ItemView * view, const TaskModel * task)
     if(view == NULL || task == NULL) return;
 
     int32_t strength = status_effect_strength(task->status);
-    apply_capsule_effect(view->status, task->status, g_demo.status_effect_now_ms, strength, true);
-    apply_capsule_effect(view->age, task->status, g_demo.status_effect_now_ms + 180U, strength / 2, false);
+    apply_capsule_effect(view->status, &view->status_effect, task->status, g_demo.status_effect_now_ms, strength, true);
+    apply_capsule_effect(view->age, &view->age_effect, task->status, g_demo.status_effect_now_ms + 180U, strength / 2, false);
 }
 
 static void refresh_status_effects(uint32_t now_ms)
@@ -1104,26 +1258,36 @@ static bool capsule_label_is_vertically_centered(const ItemView * view, const ch
     return true;
 }
 
-static bool status_effect_is_animating(ItemView * view)
+static bool status_effect_is_animating(ItemView * breathing_view, ItemView * run_view)
 {
+    if(breathing_view == NULL || run_view == NULL) return false;
+
     motion_demo_tick(120U);
     lv_timer_handler();
     lv_obj_update_layout(g_demo.root);
-    int32_t first_stop = lv_obj_get_style_bg_main_stop(view->status, 0);
-    lv_opa_t first_shadow = lv_obj_get_style_shadow_opa(view->status, 0);
+    lv_opa_t first_shadow = lv_obj_get_style_shadow_opa(breathing_view->status, 0);
+    uint32_t first_run_now = run_view->status_effect.now_ms;
 
     motion_demo_tick(720U);
     lv_timer_handler();
     lv_obj_update_layout(g_demo.root);
-    int32_t second_stop = lv_obj_get_style_bg_main_stop(view->status, 0);
-    lv_opa_t second_shadow = lv_obj_get_style_shadow_opa(view->status, 0);
+    lv_opa_t second_shadow = lv_obj_get_style_shadow_opa(breathing_view->status, 0);
+    uint32_t second_run_now = run_view->status_effect.now_ms;
 
-    if(first_stop == second_stop && first_shadow == second_shadow) {
-        fprintf(stderr, "smoke: status effect did not animate\n");
+    if(first_shadow == second_shadow) {
+        fprintf(stderr, "smoke: status breathing effect did not animate\n");
         return false;
     }
-    if(lv_obj_get_style_bg_grad_opa(view->status, 0) == LV_OPA_TRANSP) {
-        fprintf(stderr, "smoke: status sweep gradient is invisible\n");
+    if(lv_obj_get_style_bg_grad_opa(breathing_view->status, 0) != LV_OPA_TRANSP) {
+        fprintf(stderr, "smoke: non-run status should not use sweep gradient\n");
+        return false;
+    }
+    if(run_view->status_effect.status != STATUS_RUN || first_run_now == second_run_now) {
+        fprintf(stderr, "smoke: run scan effect did not advance\n");
+        return false;
+    }
+    if(lv_obj_get_style_bg_grad_opa(run_view->status, 0) != LV_OPA_TRANSP) {
+        fprintf(stderr, "smoke: run scan should use path drawing, not sweep gradient\n");
         return false;
     }
     return true;
@@ -1967,7 +2131,7 @@ bool motion_demo_smoke_check(void)
         }
     }
 
-    if(!status_effect_is_animating(&g_demo.views[view_index_for(0, 1)])) {
+    if(!status_effect_is_animating(&g_demo.views[view_index_for(0, 1)], &g_demo.views[view_index_for(0, 3)])) {
         return false;
     }
 
@@ -2219,10 +2383,12 @@ static void create_view(size_t physical_index)
 
     view->status = create_status_capsule(view->meta);
     view->status_label = lv_obj_get_child(view->status, 0);
+    lv_obj_add_event_cb(view->status, status_capsule_draw_event_cb, LV_EVENT_DRAW_MAIN_END, &view->status_effect);
     view->slash_label = make_label(view->meta, "/", g_font_slash, color_hex(0xF1F2F2));
     lv_obj_set_style_translate_y(view->slash_label, ROW_TEXT_GLYPH_TRANSLATE_Y, 0);
     view->age = create_status_capsule(view->meta);
     view->age_label = lv_obj_get_child(view->age, 0);
+    lv_obj_add_event_cb(view->age, status_capsule_draw_event_cb, LV_EVENT_DRAW_MAIN_END, &view->age_effect);
 
     lv_obj_t * detail = lv_obj_create(card);
     view->detail = detail;
