@@ -877,43 +877,59 @@ static void bind_status(ItemView * view, const TaskModel * task)
     apply_status_effect(view, task);
 }
 
-static void draw_run_scan_gradient(lv_layer_t * layer,
+static void draw_run_scan_halftone(lv_layer_t * layer,
                                    const lv_area_t * inner,
                                    int32_t head,
                                    int32_t cycle,
                                    int32_t band_width,
                                    lv_color_t color,
                                    lv_opa_t max_opa,
-                                   int32_t strip_width,
-                                   int32_t radius)
+                                   int32_t cell)
 {
-    if(layer == NULL || inner == NULL || cycle <= 0 || band_width <= 0) return;
+    if(layer == NULL || inner == NULL || cycle <= 0 || band_width <= 0 || cell <= 0) return;
 
     int32_t half = LV_MAX(1, band_width / 2);
-    int32_t sample_offset = half;
-    for(int32_t x = inner->x1; x <= inner->x2; x += strip_width) {
-        int32_t sample = (x - inner->x1) + sample_offset;
-        int32_t dist = cyclic_distance_i32(sample, head, cycle);
-        if(dist > half) continue;
+    int32_t inner_height = lv_area_get_height(inner);
+    int32_t dot_min = LV_MAX(1, cell / 3);
+    int32_t dot_max = LV_MAX(dot_min, cell - LV_MAX(1, cell / 5));
 
-        int32_t fade = 255 - ((dist * 255) / half);
-        int32_t eased = (fade * fade * (765 - (2 * fade))) / (255 * 255);
-        lv_opa_t opa = (lv_opa_t)clamp_i32(((int32_t)max_opa * eased) / 255, LV_OPA_TRANSP, LV_OPA_COVER);
-        if(opa <= LV_OPA_TRANSP) continue;
+    for(int32_t y = inner->y1; y <= inner->y2; y += cell) {
+        int32_t row = (y - inner->y1) / cell;
+        int32_t row_phase = (row & 1) ? cell / 2 : 0;
 
-        lv_area_t strip = {
-            .x1 = x,
-            .x2 = LV_MIN(x + strip_width - 1, inner->x2),
-            .y1 = inner->y1,
-            .y2 = inner->y2,
-        };
-        lv_draw_fill_dsc_t fill_dsc;
-        lv_draw_fill_dsc_init(&fill_dsc);
-        fill_dsc.base.layer = layer;
-        fill_dsc.color = color;
-        fill_dsc.opa = opa;
-        fill_dsc.radius = radius;
-        lv_draw_fill(layer, &fill_dsc, &strip);
+        for(int32_t x = inner->x1 - row_phase; x <= inner->x2; x += cell) {
+            int32_t sample_x = (x - inner->x1) + row_phase + (cell / 2);
+            int32_t sample_y = (y - inner->y1) + (cell / 2);
+            int32_t dist = cyclic_distance_i32(sample_x, head, cycle);
+            if(dist > half) continue;
+
+            int32_t fade = 255 - ((dist * 255) / half);
+            int32_t eased = (fade * fade * (765 - (2 * fade))) / (255 * 255);
+            int32_t vertical = inner_height > 0 ? LV_MIN(sample_y, inner_height - sample_y) : 0;
+            int32_t edge_lift = inner_height > 0 ? 190 + ((65 * vertical) / LV_MAX(1, inner_height / 2)) : 255;
+            int32_t level = (eased * edge_lift) / 255;
+            int32_t dot = dot_min + (((dot_max - dot_min) * level) / 255);
+            lv_opa_t opa = (lv_opa_t)clamp_i32(((int32_t)max_opa * (96 + level)) / 351, LV_OPA_TRANSP, LV_OPA_COVER);
+            if(dot <= 0 || opa <= LV_OPA_TRANSP) continue;
+
+            int32_t cx = x + cell / 2;
+            int32_t cy = y + cell / 2;
+            lv_area_t pixel = {
+                .x1 = LV_MAX(cx - dot / 2, inner->x1),
+                .x2 = LV_MIN(cx + (dot - 1) / 2, inner->x2),
+                .y1 = LV_MAX(cy - dot / 2, inner->y1),
+                .y2 = LV_MIN(cy + (dot - 1) / 2, inner->y2),
+            };
+            if(pixel.x1 > pixel.x2 || pixel.y1 > pixel.y2) continue;
+
+            lv_draw_fill_dsc_t fill_dsc;
+            lv_draw_fill_dsc_init(&fill_dsc);
+            fill_dsc.base.layer = layer;
+            fill_dsc.color = color;
+            fill_dsc.opa = opa;
+            fill_dsc.radius = 0;
+            lv_draw_fill(layer, &fill_dsc, &pixel);
+        }
     }
 }
 
@@ -941,11 +957,10 @@ static void status_capsule_draw_event_cb(lv_event_t * e)
     int32_t head = run_scan_position(effect->now_ms, cycle, effect->primary);
     lv_color_t glow = status_highlight_color(STATUS_RUN);
     lv_layer_t * layer = lv_event_get_layer(e);
-    int32_t strip_width = LV_MAX(1, inner_width / 36);
-    int32_t radius = LV_MIN(lv_obj_get_style_radius(capsule, 0), inner_height / 2);
+    int32_t cell = LV_MAX(1, inner_height / (effect->primary ? 6 : 5));
 
-    draw_run_scan_gradient(layer, &inner, head, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, strip_width, radius);
-    draw_run_scan_gradient(layer, &inner, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, strip_width, radius);
+    draw_run_scan_halftone(layer, &inner, head, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
+    draw_run_scan_halftone(layer, &inner, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, LV_MAX(1, cell / 2));
 }
 
 static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
