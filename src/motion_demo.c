@@ -82,8 +82,8 @@ enum {
     CARD_BORDER_OPA_NOTIFY = 78,
     CARD_BORDER_OPA_FOCUSED = 132,
     CARD_BORDER_OPA_EXPANDED = 158,
-    STATUS_EFFECT_FRAME_MS = 16,
     STATUS_HALFTONE_MAX_CELLS = 180,
+    RUN_SCAN_SUBPIXEL_SCALE = 256,
 };
 
 typedef struct {
@@ -482,19 +482,20 @@ static int32_t cyclic_distance_i32(int32_t a, int32_t b, int32_t cycle)
     return delta > cycle / 2 ? cycle - delta : delta;
 }
 
-static int32_t run_scan_position(uint32_t now_ms, int32_t path_len, bool primary)
+static int32_t run_scan_position_scaled(uint32_t now_ms, int32_t path_len, bool primary)
 {
     if(path_len <= 0) return 0;
     uint32_t period = status_effect_period_ms(STATUS_RUN);
     uint32_t phase = period > 0 ? now_ms % period : 0;
-    int32_t offset = primary ? 0 : path_len / 5;
-    int32_t scan = period > 0 ? (int32_t)((phase * (uint32_t)path_len) / period) : 0;
-    return positive_mod_i32(scan + offset, path_len);
+    int32_t scaled_path = path_len * RUN_SCAN_SUBPIXEL_SCALE;
+    int32_t offset = primary ? 0 : scaled_path / 5;
+    int32_t scan = period > 0 ? (int32_t)((phase * (uint32_t)scaled_path) / period) : 0;
+    return positive_mod_i32(scan + offset, scaled_path);
 }
 
-static uint32_t status_effect_frame_time(uint32_t now_ms)
+static int32_t run_scan_position(uint32_t now_ms, int32_t path_len, bool primary)
 {
-    return now_ms - (now_ms % STATUS_EFFECT_FRAME_MS);
+    return run_scan_position_scaled(now_ms, path_len, primary) / RUN_SCAN_SUBPIXEL_SCALE;
 }
 
 static lv_color_t status_text_color(StatusType status)
@@ -1011,7 +1012,7 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
                                    const lv_area_t * inner,
                                    const lv_area_t * mask,
                                    int32_t mask_radius,
-                                   int32_t head,
+                                   int32_t head_scaled,
                                    int32_t cycle,
                                    int32_t band_width,
                                    lv_color_t color,
@@ -1020,7 +1021,8 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
 {
     if(layer == NULL || inner == NULL || mask == NULL || cycle <= 0 || band_width <= 0 || cell <= 0) return;
 
-    int32_t half = LV_MAX(1, band_width / 2);
+    int32_t scaled_cycle = cycle * RUN_SCAN_SUBPIXEL_SCALE;
+    int32_t half_scaled = LV_MAX(RUN_SCAN_SUBPIXEL_SCALE, (band_width * RUN_SCAN_SUBPIXEL_SCALE) / 2);
     int32_t inner_height = lv_area_get_height(inner);
     int32_t dot_min = LV_MAX(1, cell / 3);
     int32_t dot_max = LV_MAX(dot_min, cell - LV_MAX(1, cell / 5));
@@ -1032,10 +1034,11 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
         for(int32_t x = inner->x1 - row_phase; x <= inner->x2; x += cell) {
             int32_t sample_x = (x - inner->x1) + row_phase + (cell / 2);
             int32_t sample_y = (y - inner->y1) + (cell / 2);
-            int32_t dist = cyclic_distance_i32(sample_x, head, cycle);
-            if(dist > half) continue;
+            int32_t sample_scaled = sample_x * RUN_SCAN_SUBPIXEL_SCALE;
+            int32_t dist = cyclic_distance_i32(sample_scaled, head_scaled, scaled_cycle);
+            if(dist > half_scaled) continue;
 
-            int32_t fade = 255 - ((dist * 255) / half);
+            int32_t fade = 255 - ((dist * 255) / half_scaled);
             int32_t eased = (fade * fade * (765 - (2 * fade))) / (255 * 255);
             int32_t vertical = inner_height > 0 ? LV_MIN(sample_y, inner_height - sample_y) : 0;
             int32_t edge_lift = inner_height > 0 ? 190 + ((65 * vertical) / LV_MAX(1, inner_height / 2)) : 255;
@@ -1092,15 +1095,15 @@ static void status_capsule_draw_event_cb(lv_event_t * e)
     int32_t band_width = effect->primary ? LV_MAX(inner_height * 2, inner_width / 2) : LV_MAX((inner_height * 3) / 2, (inner_width * 2) / 5);
     int32_t core_width = LV_MAX(1, band_width / 3);
     int32_t cycle = inner_width + band_width;
-    int32_t head = run_scan_position(effect->now_ms, cycle, effect->primary);
+    int32_t head_scaled = run_scan_position_scaled(effect->now_ms, cycle, effect->primary);
     lv_color_t glow = status_highlight_color(STATUS_RUN);
     lv_layer_t * layer = lv_event_get_layer(e);
     int32_t cell = LV_MAX(3, inner_height / (effect->primary ? 5 : 4));
     int32_t core_cell = effect->primary ? LV_MAX(3, (cell * 2) / 3) : cell;
     int32_t mask_radius = LV_MIN(lv_obj_get_style_radius(capsule, 0), LV_MIN(width, height) / 2);
 
-    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
-    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_40, core_cell);
+    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head_scaled, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
+    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head_scaled, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_40, core_cell);
 }
 
 static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
@@ -1150,10 +1153,7 @@ static void apply_status_effect(ItemView * view, const TaskModel * task)
 
 static void refresh_status_effects(uint32_t now_ms)
 {
-    uint32_t frame_ms = status_effect_frame_time(now_ms);
-    if(frame_ms == g_demo.status_effect_now_ms) return;
-
-    g_demo.status_effect_now_ms = frame_ms;
+    g_demo.status_effect_now_ms = now_ms;
     for(int32_t i = 0; i < VIEW_COUNT; ++i) {
         ItemView * view = &g_demo.views[i];
         if(!view->bound || lv_obj_has_flag(view->card, LV_OBJ_FLAG_HIDDEN)) continue;
@@ -1376,6 +1376,13 @@ static bool status_effect_is_animating(ItemView * breathing_view, ItemView * run
     lv_obj_update_layout(g_demo.root);
     lv_opa_t first_shadow = lv_obj_get_style_shadow_opa(breathing_view->status, 0);
     uint32_t first_run_now = run_view->status_effect.now_ms;
+    int32_t first_run_phase = run_scan_position_scaled(first_run_now, 160, true);
+
+    motion_demo_tick(121U);
+    lv_timer_handler();
+    lv_obj_update_layout(g_demo.root);
+    uint32_t subpixel_run_now = run_view->status_effect.now_ms;
+    int32_t subpixel_run_phase = run_scan_position_scaled(subpixel_run_now, 160, true);
 
     motion_demo_tick(720U);
     lv_timer_handler();
@@ -1385,6 +1392,10 @@ static bool status_effect_is_animating(ItemView * breathing_view, ItemView * run
 
     if(first_shadow == second_shadow) {
         fprintf(stderr, "smoke: status breathing effect did not animate\n");
+        return false;
+    }
+    if(subpixel_run_now != 121U || subpixel_run_phase == first_run_phase) {
+        fprintf(stderr, "smoke: run scan phase is not continuous at millisecond resolution\n");
         return false;
     }
     if(lv_obj_get_style_bg_grad_opa(breathing_view->status, 0) != LV_OPA_TRANSP) {
