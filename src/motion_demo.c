@@ -877,8 +877,69 @@ static void bind_status(ItemView * view, const TaskModel * task)
     apply_status_effect(view, task);
 }
 
+static bool point_is_inside_rounded_mask(const lv_area_t * mask, int32_t radius, int32_t x, int32_t y)
+{
+    if(mask == NULL) return false;
+    if(x < mask->x1 || x > mask->x2 || y < mask->y1 || y > mask->y2) return false;
+
+    int32_t width = lv_area_get_width(mask);
+    int32_t height = lv_area_get_height(mask);
+    radius = clamp_i32(radius, 0, LV_MIN(width, height) / 2);
+    if(radius <= 0) return true;
+
+    int32_t left = mask->x1 + radius;
+    int32_t right = mask->x2 - radius;
+    int32_t top = mask->y1 + radius;
+    int32_t bottom = mask->y2 - radius;
+    int32_t cx = x < left ? left : (x > right ? right : x);
+    int32_t cy = y < top ? top : (y > bottom ? bottom : y);
+    int32_t dx = x - cx;
+    int32_t dy = y - cy;
+    return (dx * dx) + (dy * dy) <= radius * radius;
+}
+
+static bool area_is_inside_rounded_mask(const lv_area_t * area, const lv_area_t * mask, int32_t radius)
+{
+    return area != NULL && mask != NULL &&
+           point_is_inside_rounded_mask(mask, radius, area->x1, area->y1) &&
+           point_is_inside_rounded_mask(mask, radius, area->x2, area->y1) &&
+           point_is_inside_rounded_mask(mask, radius, area->x1, area->y2) &&
+           point_is_inside_rounded_mask(mask, radius, area->x2, area->y2);
+}
+
+static bool fit_area_to_rounded_mask(lv_area_t * area, const lv_area_t * mask, int32_t radius)
+{
+    if(area == NULL || mask == NULL) return false;
+
+    area->x1 = LV_MAX(area->x1, mask->x1);
+    area->x2 = LV_MIN(area->x2, mask->x2);
+    area->y1 = LV_MAX(area->y1, mask->y1);
+    area->y2 = LV_MIN(area->y2, mask->y2);
+
+    while(area->x1 <= area->x2 && area->y1 <= area->y2 && !area_is_inside_rounded_mask(area, mask, radius)) {
+        bool shrink_left = !point_is_inside_rounded_mask(mask, radius, area->x1, area->y1) ||
+                           !point_is_inside_rounded_mask(mask, radius, area->x1, area->y2);
+        bool shrink_right = !point_is_inside_rounded_mask(mask, radius, area->x2, area->y1) ||
+                            !point_is_inside_rounded_mask(mask, radius, area->x2, area->y2);
+        bool shrink_top = !point_is_inside_rounded_mask(mask, radius, area->x1, area->y1) ||
+                          !point_is_inside_rounded_mask(mask, radius, area->x2, area->y1);
+        bool shrink_bottom = !point_is_inside_rounded_mask(mask, radius, area->x1, area->y2) ||
+                             !point_is_inside_rounded_mask(mask, radius, area->x2, area->y2);
+
+        if(shrink_left) area->x1++;
+        if(shrink_right) area->x2--;
+        if(shrink_top) area->y1++;
+        if(shrink_bottom) area->y2--;
+        if(!shrink_left && !shrink_right && !shrink_top && !shrink_bottom) break;
+    }
+
+    return area->x1 <= area->x2 && area->y1 <= area->y2;
+}
+
 static void draw_run_scan_halftone(lv_layer_t * layer,
                                    const lv_area_t * inner,
+                                   const lv_area_t * mask,
+                                   int32_t mask_radius,
                                    int32_t head,
                                    int32_t cycle,
                                    int32_t band_width,
@@ -886,7 +947,7 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
                                    lv_opa_t max_opa,
                                    int32_t cell)
 {
-    if(layer == NULL || inner == NULL || cycle <= 0 || band_width <= 0 || cell <= 0) return;
+    if(layer == NULL || inner == NULL || mask == NULL || cycle <= 0 || band_width <= 0 || cell <= 0) return;
 
     int32_t half = LV_MAX(1, band_width / 2);
     int32_t inner_height = lv_area_get_height(inner);
@@ -921,6 +982,7 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
                 .y2 = LV_MIN(cy + (dot - 1) / 2, inner->y2),
             };
             if(pixel.x1 > pixel.x2 || pixel.y1 > pixel.y2) continue;
+            if(!fit_area_to_rounded_mask(&pixel, mask, mask_radius)) continue;
 
             lv_draw_fill_dsc_t fill_dsc;
             lv_draw_fill_dsc_init(&fill_dsc);
@@ -958,9 +1020,10 @@ static void status_capsule_draw_event_cb(lv_event_t * e)
     lv_color_t glow = status_highlight_color(STATUS_RUN);
     lv_layer_t * layer = lv_event_get_layer(e);
     int32_t cell = LV_MAX(1, inner_height / (effect->primary ? 6 : 5));
+    int32_t mask_radius = LV_MIN(lv_obj_get_style_radius(capsule, 0), LV_MIN(width, height) / 2);
 
-    draw_run_scan_halftone(layer, &inner, head, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
-    draw_run_scan_halftone(layer, &inner, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, LV_MAX(1, cell / 2));
+    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
+    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, LV_MAX(1, cell / 2));
 }
 
 static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
@@ -1254,6 +1317,34 @@ static bool status_effect_is_animating(ItemView * breathing_view, ItemView * run
     }
     if(lv_obj_get_style_bg_grad_opa(run_view->status, 0) != LV_OPA_TRANSP) {
         fprintf(stderr, "smoke: run scan should use custom cyclic drawing, not style sweep gradient\n");
+        return false;
+    }
+    return true;
+}
+
+static bool rounded_mask_clips_capsule_corners(const ItemView * view)
+{
+    if(view == NULL || view->status == NULL) return false;
+
+    lv_area_t mask;
+    lv_obj_get_coords(view->status, &mask);
+    int32_t radius = LV_MIN(lv_obj_get_style_radius(view->status, 0), LV_MIN(lv_area_get_width(&mask), lv_area_get_height(&mask)) / 2);
+    if(radius <= 0) return true;
+
+    lv_area_t pixel = {
+        .x1 = mask.x1,
+        .x2 = mask.x1 + LV_MAX(1, radius / 2),
+        .y1 = mask.y1,
+        .y2 = mask.y1 + LV_MAX(1, radius / 2),
+    };
+    if(!fit_area_to_rounded_mask(&pixel, &mask, radius)) return true;
+
+    if(!area_is_inside_rounded_mask(&pixel, &mask, radius)) {
+        fprintf(stderr, "smoke: rounded status mask failed to contain fitted pixel\n");
+        return false;
+    }
+    if(pixel.x1 == mask.x1 && pixel.y1 == mask.y1) {
+        fprintf(stderr, "smoke: rounded status mask did not clip the corner\n");
         return false;
     }
     return true;
@@ -2097,7 +2188,8 @@ bool motion_demo_smoke_check(void)
         }
     }
 
-    if(!status_effect_is_animating(&g_demo.views[view_index_for(0, 1)], &g_demo.views[view_index_for(0, 3)])) {
+    if(!status_effect_is_animating(&g_demo.views[view_index_for(0, 1)], &g_demo.views[view_index_for(0, 3)]) ||
+       !rounded_mask_clips_capsule_corners(&g_demo.views[view_index_for(0, 3)])) {
         return false;
     }
 
