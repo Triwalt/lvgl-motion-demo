@@ -897,7 +897,7 @@ static void draw_run_scan_gradient(lv_layer_t * layer,
         if(dist > half) continue;
 
         int32_t fade = 255 - ((dist * 255) / half);
-        int32_t eased = (fade * fade) / 255;
+        int32_t eased = (fade * fade * (765 - (2 * fade))) / (255 * 255);
         lv_opa_t opa = (lv_opa_t)clamp_i32(((int32_t)max_opa * eased) / 255, LV_OPA_TRANSP, LV_OPA_COVER);
         if(opa <= LV_OPA_TRANSP) continue;
 
@@ -930,25 +930,22 @@ static void status_capsule_draw_event_cb(lv_event_t * e)
     lv_obj_get_coords(capsule, &coords);
     int32_t width = lv_area_get_width(&coords);
     int32_t height = lv_area_get_height(&coords);
-    if(width < 18 || height < 14) return;
+    if(width <= 0 || height <= 0) return;
 
-    int32_t inset_x = effect->primary ? 2 : 2;
-    int32_t inset_y = effect->primary ? 3 : 4;
-    lv_area_t inner = {
-        .x1 = coords.x1 + inset_x,
-        .x2 = coords.x2 - inset_x,
-        .y1 = coords.y1 + inset_y,
-        .y2 = coords.y2 - inset_y,
-    };
+    lv_area_t inner = coords;
     int32_t inner_width = lv_area_get_width(&inner);
-    int32_t band_width = effect->primary ? LV_MAX(34, inner_width / 2) : LV_MAX(24, (inner_width * 2) / 5);
+    int32_t inner_height = lv_area_get_height(&inner);
+    int32_t band_width = effect->primary ? LV_MAX(inner_height * 2, inner_width / 2) : LV_MAX((inner_height * 3) / 2, (inner_width * 2) / 5);
+    int32_t core_width = LV_MAX(1, band_width / 3);
     int32_t cycle = inner_width + band_width;
     int32_t head = run_scan_position(effect->now_ms, cycle, effect->primary);
     lv_color_t glow = status_highlight_color(STATUS_RUN);
     lv_layer_t * layer = lv_event_get_layer(e);
+    int32_t strip_width = LV_MAX(1, inner_width / 36);
+    int32_t radius = LV_MIN(lv_obj_get_style_radius(capsule, 0), inner_height / 2);
 
-    draw_run_scan_gradient(layer, &inner, head, cycle, band_width, glow, effect->primary ? LV_OPA_60 : LV_OPA_40, 2, 5);
-    draw_run_scan_gradient(layer, &inner, head, cycle, band_width / 3, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, 2, 4);
+    draw_run_scan_gradient(layer, &inner, head, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, strip_width, radius);
+    draw_run_scan_gradient(layer, &inner, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, strip_width, radius);
 }
 
 static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
