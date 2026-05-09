@@ -475,27 +475,21 @@ static int32_t triangle_wave_u8(uint32_t now_ms, uint32_t period_ms)
     return (int32_t)((phase * 255U) / half);
 }
 
-static int32_t cyclic_distance_i32(int32_t a, int32_t b, int32_t cycle)
+static int32_t run_scan_head_scaled(uint32_t now_ms, int32_t visible_width, int32_t band_width, bool primary)
 {
-    if(cycle <= 0) return 0;
-    int32_t delta = abs_i32(positive_mod_i32(a, cycle) - positive_mod_i32(b, cycle));
-    return delta > cycle / 2 ? cycle - delta : delta;
-}
+    if(visible_width <= 0 || band_width <= 0) return 0;
 
-static int32_t run_scan_position_scaled(uint32_t now_ms, int32_t path_len, bool primary)
-{
-    if(path_len <= 0) return 0;
     uint32_t period = status_effect_period_ms(STATUS_RUN);
-    uint32_t phase = period > 0 ? now_ms % period : 0;
-    int32_t scaled_path = path_len * RUN_SCAN_SUBPIXEL_SCALE;
-    int32_t offset = primary ? 0 : scaled_path / 5;
+    uint32_t offset_ms = primary ? 0U : period / 5U;
+    uint32_t phase = period > 0 ? (now_ms + offset_ms) % period : 0;
+    int32_t scaled_path = (visible_width + (band_width * 2)) * RUN_SCAN_SUBPIXEL_SCALE;
     int32_t scan = period > 0 ? (int32_t)((phase * (uint32_t)scaled_path) / period) : 0;
-    return positive_mod_i32(scan + offset, scaled_path);
+    return scan - (band_width * RUN_SCAN_SUBPIXEL_SCALE);
 }
 
-static int32_t run_scan_position(uint32_t now_ms, int32_t path_len, bool primary)
+static int32_t run_scan_head(uint32_t now_ms, int32_t visible_width, int32_t band_width, bool primary)
 {
-    return run_scan_position_scaled(now_ms, path_len, primary) / RUN_SCAN_SUBPIXEL_SCALE;
+    return run_scan_head_scaled(now_ms, visible_width, band_width, primary) / RUN_SCAN_SUBPIXEL_SCALE;
 }
 
 static lv_color_t status_text_color(StatusType status)
@@ -988,11 +982,10 @@ static bool row_span_for_rounded_mask(const lv_area_t * mask, int32_t radius, in
 
 static int32_t estimate_run_halftone_cells(const lv_area_t * inner,
                                            int32_t head,
-                                           int32_t cycle,
                                            int32_t band_width,
                                            int32_t cell)
 {
-    if(inner == NULL || cycle <= 0 || band_width <= 0 || cell <= 0) return 0;
+    if(inner == NULL || band_width <= 0 || cell <= 0) return 0;
 
     int32_t half = LV_MAX(1, band_width / 2);
     int32_t cells = 0;
@@ -1002,10 +995,36 @@ static int32_t estimate_run_halftone_cells(const lv_area_t * inner,
 
         for(int32_t x = inner->x1 - row_phase; x <= inner->x2; x += cell) {
             int32_t sample_x = (x - inner->x1) + row_phase + (cell / 2);
-            if(cyclic_distance_i32(sample_x, head, cycle) <= half) cells++;
+            if(abs_i32(sample_x - head) <= half) cells++;
         }
     }
     return cells;
+}
+
+static int32_t estimate_run_halftone_energy(const lv_area_t * inner,
+                                            int32_t head_scaled,
+                                            int32_t band_width,
+                                            int32_t cell)
+{
+    if(inner == NULL || band_width <= 0 || cell <= 0) return 0;
+
+    int32_t half_scaled = LV_MAX(RUN_SCAN_SUBPIXEL_SCALE, (band_width * RUN_SCAN_SUBPIXEL_SCALE) / 2);
+    int32_t energy = 0;
+    for(int32_t y = inner->y1; y <= inner->y2; y += cell) {
+        int32_t row = (y - inner->y1) / cell;
+        int32_t row_phase = (row & 1) ? cell / 2 : 0;
+
+        for(int32_t x = inner->x1 - row_phase; x <= inner->x2; x += cell) {
+            int32_t sample_x = (x - inner->x1) + row_phase + (cell / 2);
+            int32_t dist = abs_i32((sample_x * RUN_SCAN_SUBPIXEL_SCALE) - head_scaled);
+            if(dist > half_scaled) continue;
+
+            int32_t fade = 255 - ((dist * 255) / half_scaled);
+            int32_t eased = (fade * fade * (765 - (2 * fade))) / (255 * 255);
+            energy += eased;
+        }
+    }
+    return energy;
 }
 
 static void draw_run_scan_halftone(lv_layer_t * layer,
@@ -1013,15 +1032,13 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
                                    const lv_area_t * mask,
                                    int32_t mask_radius,
                                    int32_t head_scaled,
-                                   int32_t cycle,
                                    int32_t band_width,
                                    lv_color_t color,
                                    lv_opa_t max_opa,
                                    int32_t cell)
 {
-    if(layer == NULL || inner == NULL || mask == NULL || cycle <= 0 || band_width <= 0 || cell <= 0) return;
+    if(layer == NULL || inner == NULL || mask == NULL || band_width <= 0 || cell <= 0) return;
 
-    int32_t scaled_cycle = cycle * RUN_SCAN_SUBPIXEL_SCALE;
     int32_t half_scaled = LV_MAX(RUN_SCAN_SUBPIXEL_SCALE, (band_width * RUN_SCAN_SUBPIXEL_SCALE) / 2);
     int32_t inner_height = lv_area_get_height(inner);
     int32_t dot_min = LV_MAX(1, cell / 3);
@@ -1035,7 +1052,7 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
             int32_t sample_x = (x - inner->x1) + row_phase + (cell / 2);
             int32_t sample_y = (y - inner->y1) + (cell / 2);
             int32_t sample_scaled = sample_x * RUN_SCAN_SUBPIXEL_SCALE;
-            int32_t dist = cyclic_distance_i32(sample_scaled, head_scaled, scaled_cycle);
+            int32_t dist = abs_i32(sample_scaled - head_scaled);
             if(dist > half_scaled) continue;
 
             int32_t fade = 255 - ((dist * 255) / half_scaled);
@@ -1094,16 +1111,15 @@ static void status_capsule_draw_event_cb(lv_event_t * e)
     int32_t inner_height = lv_area_get_height(&inner);
     int32_t band_width = effect->primary ? LV_MAX(inner_height * 2, inner_width / 2) : LV_MAX((inner_height * 3) / 2, (inner_width * 2) / 5);
     int32_t core_width = LV_MAX(1, band_width / 3);
-    int32_t cycle = inner_width + band_width;
-    int32_t head_scaled = run_scan_position_scaled(effect->now_ms, cycle, effect->primary);
+    int32_t head_scaled = run_scan_head_scaled(effect->now_ms, inner_width, band_width, effect->primary);
     lv_color_t glow = status_highlight_color(STATUS_RUN);
     lv_layer_t * layer = lv_event_get_layer(e);
     int32_t cell = LV_MAX(3, inner_height / (effect->primary ? 5 : 4));
     int32_t core_cell = effect->primary ? LV_MAX(3, (cell * 2) / 3) : cell;
     int32_t mask_radius = LV_MIN(lv_obj_get_style_radius(capsule, 0), LV_MIN(width, height) / 2);
 
-    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head_scaled, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
-    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head_scaled, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_40, core_cell);
+    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head_scaled, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
+    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head_scaled, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_40, core_cell);
 }
 
 static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
@@ -1376,13 +1392,13 @@ static bool status_effect_is_animating(ItemView * breathing_view, ItemView * run
     lv_obj_update_layout(g_demo.root);
     lv_opa_t first_shadow = lv_obj_get_style_shadow_opa(breathing_view->status, 0);
     uint32_t first_run_now = run_view->status_effect.now_ms;
-    int32_t first_run_phase = run_scan_position_scaled(first_run_now, 160, true);
+    int32_t first_run_phase = run_scan_head_scaled(first_run_now, 160, 80, true);
 
     motion_demo_tick(121U);
     lv_timer_handler();
     lv_obj_update_layout(g_demo.root);
     uint32_t subpixel_run_now = run_view->status_effect.now_ms;
-    int32_t subpixel_run_phase = run_scan_position_scaled(subpixel_run_now, 160, true);
+    int32_t subpixel_run_phase = run_scan_head_scaled(subpixel_run_now, 160, 80, true);
 
     motion_demo_tick(720U);
     lv_timer_handler();
@@ -1474,16 +1490,63 @@ static bool run_halftone_workload_is_bounded(const ItemView * view)
 
     int32_t band_width = LV_MAX(height * 2, width / 2);
     int32_t core_width = LV_MAX(1, band_width / 3);
-    int32_t cycle = width + band_width;
-    int32_t head = run_scan_position(view->status_effect.now_ms, cycle, true);
+    int32_t head = run_scan_head(view->status_effect.now_ms, width, band_width, true);
     int32_t cell = LV_MAX(3, height / 5);
     int32_t core_cell = LV_MAX(3, (cell * 2) / 3);
-    int32_t broad_cells = estimate_run_halftone_cells(&coords, head, cycle, band_width, cell);
-    int32_t core_cells = estimate_run_halftone_cells(&coords, head, cycle, core_width, core_cell);
+    int32_t broad_cells = estimate_run_halftone_cells(&coords, head, band_width, cell);
+    int32_t core_cells = estimate_run_halftone_cells(&coords, head, core_width, core_cell);
     int32_t total_cells = broad_cells + core_cells;
 
     if(total_cells > STATUS_HALFTONE_MAX_CELLS) {
         fprintf(stderr, "smoke: run halftone workload too dense: %d cells\n", (int)total_cells);
+        return false;
+    }
+    return true;
+}
+
+static bool run_scan_curve_is_continuous(void)
+{
+    lv_area_t inner = {
+        .x1 = 0,
+        .y1 = 0,
+        .x2 = 69,
+        .y2 = 26,
+    };
+    int32_t width = lv_area_get_width(&inner);
+    int32_t height = lv_area_get_height(&inner);
+    int32_t band_width = LV_MAX(height * 2, width / 2);
+    int32_t cell = LV_MAX(3, height / 5);
+    uint32_t period = status_effect_period_ms(STATUS_RUN);
+    int32_t last_head = run_scan_head_scaled(0, width, band_width, true);
+    int32_t first_energy = estimate_run_halftone_energy(&inner, last_head, band_width, cell);
+    int32_t last_energy = first_energy;
+    int32_t max_energy_step = 0;
+
+    for(uint32_t t = 1; t < period; ++t) {
+        int32_t head = run_scan_head_scaled(t, width, band_width, true);
+        int32_t step = head - last_head;
+        if(step <= 0 || step > RUN_SCAN_SUBPIXEL_SCALE) {
+            fprintf(stderr, "smoke: run scan head has discontinuous step %d at %u ms\n", (int)step, (unsigned)t);
+            return false;
+        }
+
+        int32_t energy = estimate_run_halftone_energy(&inner, head, band_width, cell);
+        max_energy_step = LV_MAX(max_energy_step, abs_i32(energy - last_energy));
+        last_head = head;
+        last_energy = energy;
+    }
+
+    int32_t loop_head = run_scan_head_scaled(period, width, band_width, true);
+    int32_t loop_energy = estimate_run_halftone_energy(&inner, loop_head, band_width, cell);
+    if(first_energy != 0 || last_energy != 0 || loop_energy != 0) {
+        fprintf(stderr, "smoke: run scan loop reset is visible: first=%d last=%d loop=%d\n",
+                (int)first_energy,
+                (int)last_energy,
+                (int)loop_energy);
+        return false;
+    }
+    if(max_energy_step > 320) {
+        fprintf(stderr, "smoke: run scan brightness curve has a large step: %d\n", (int)max_energy_step);
         return false;
     }
     return true;
@@ -2329,7 +2392,8 @@ bool motion_demo_smoke_check(void)
 
     if(!status_effect_is_animating(&g_demo.views[view_index_for(0, 1)], &g_demo.views[view_index_for(0, 3)]) ||
        !rounded_mask_clips_capsule_corners(&g_demo.views[view_index_for(0, 3)]) ||
-       !run_halftone_workload_is_bounded(&g_demo.views[view_index_for(0, 3)])) {
+       !run_halftone_workload_is_bounded(&g_demo.views[view_index_for(0, 3)]) ||
+       !run_scan_curve_is_continuous()) {
         return false;
     }
 
