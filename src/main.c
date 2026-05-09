@@ -258,7 +258,6 @@ int main(int argc, char ** argv)
 
         uint32_t wait_ms = lv_timer_handler();
         poll_input_events();
-        motion_demo_tick(SDL_GetTicks());
 
         if(wait_ms == LV_NO_TIMER_READY) {
             wait_ms = 5;

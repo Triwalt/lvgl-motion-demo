@@ -82,6 +82,8 @@ enum {
     CARD_BORDER_OPA_NOTIFY = 78,
     CARD_BORDER_OPA_FOCUSED = 132,
     CARD_BORDER_OPA_EXPANDED = 158,
+    STATUS_EFFECT_FRAME_MS = 16,
+    STATUS_HALFTONE_MAX_CELLS = 180,
 };
 
 typedef struct {
@@ -380,6 +382,22 @@ static int32_t positive_mod_i32(int32_t value, int32_t modulus)
     return result < 0 ? result + modulus : result;
 }
 
+static int32_t isqrt_i32(int32_t value)
+{
+    if(value <= 0) return 0;
+
+    int32_t low = 0;
+    int32_t high = value < 46340 ? value : 46340;
+    while(low <= high) {
+        int32_t mid = low + (high - low) / 2;
+        int32_t square = mid * mid;
+        if(square == value) return mid;
+        if(square < value) low = mid + 1;
+        else high = mid - 1;
+    }
+    return high;
+}
+
 static void set_classic_smooth_motion(lv_anim_t * anim, uint32_t duration_ms)
 {
     lv_anim_set_duration(anim, duration_ms);
@@ -472,6 +490,11 @@ static int32_t run_scan_position(uint32_t now_ms, int32_t path_len, bool primary
     int32_t offset = primary ? 0 : path_len / 5;
     int32_t scan = period > 0 ? (int32_t)((phase * (uint32_t)path_len) / period) : 0;
     return positive_mod_i32(scan + offset, path_len);
+}
+
+static uint32_t status_effect_frame_time(uint32_t now_ms)
+{
+    return now_ms - (now_ms % STATUS_EFFECT_FRAME_MS);
 }
 
 static lv_color_t status_text_color(StatusType status)
@@ -936,6 +959,54 @@ static bool fit_area_to_rounded_mask(lv_area_t * area, const lv_area_t * mask, i
     return area->x1 <= area->x2 && area->y1 <= area->y2;
 }
 
+static bool row_span_for_rounded_mask(const lv_area_t * mask, int32_t radius, int32_t y1, int32_t y2, int32_t * x1, int32_t * x2)
+{
+    if(mask == NULL || x1 == NULL || x2 == NULL) return false;
+
+    int32_t width = lv_area_get_width(mask);
+    int32_t height = lv_area_get_height(mask);
+    radius = clamp_i32(radius, 0, LV_MIN(width, height) / 2);
+
+    int32_t top = mask->y1 + radius;
+    int32_t bottom = mask->y2 - radius;
+    int32_t inset = 0;
+
+    if(radius > 0 && y1 < top) {
+        int32_t dy = top - y1;
+        inset = LV_MAX(inset, radius - isqrt_i32(LV_MAX(0, (radius * radius) - (dy * dy))));
+    }
+    if(radius > 0 && y2 > bottom) {
+        int32_t dy = y2 - bottom;
+        inset = LV_MAX(inset, radius - isqrt_i32(LV_MAX(0, (radius * radius) - (dy * dy))));
+    }
+
+    *x1 = mask->x1 + inset;
+    *x2 = mask->x2 - inset;
+    return *x1 <= *x2;
+}
+
+static int32_t estimate_run_halftone_cells(const lv_area_t * inner,
+                                           int32_t head,
+                                           int32_t cycle,
+                                           int32_t band_width,
+                                           int32_t cell)
+{
+    if(inner == NULL || cycle <= 0 || band_width <= 0 || cell <= 0) return 0;
+
+    int32_t half = LV_MAX(1, band_width / 2);
+    int32_t cells = 0;
+    for(int32_t y = inner->y1; y <= inner->y2; y += cell) {
+        int32_t row = (y - inner->y1) / cell;
+        int32_t row_phase = (row & 1) ? cell / 2 : 0;
+
+        for(int32_t x = inner->x1 - row_phase; x <= inner->x2; x += cell) {
+            int32_t sample_x = (x - inner->x1) + row_phase + (cell / 2);
+            if(cyclic_distance_i32(sample_x, head, cycle) <= half) cells++;
+        }
+    }
+    return cells;
+}
+
 static void draw_run_scan_halftone(lv_layer_t * layer,
                                    const lv_area_t * inner,
                                    const lv_area_t * mask,
@@ -975,14 +1046,19 @@ static void draw_run_scan_halftone(lv_layer_t * layer,
 
             int32_t cx = x + cell / 2;
             int32_t cy = y + cell / 2;
+            int32_t py1 = LV_MAX(cy - dot / 2, inner->y1);
+            int32_t py2 = LV_MIN(cy + (dot - 1) / 2, inner->y2);
+            int32_t mask_x1;
+            int32_t mask_x2;
+            if(py1 > py2 || !row_span_for_rounded_mask(mask, mask_radius, py1, py2, &mask_x1, &mask_x2)) continue;
+
             lv_area_t pixel = {
-                .x1 = LV_MAX(cx - dot / 2, inner->x1),
-                .x2 = LV_MIN(cx + (dot - 1) / 2, inner->x2),
-                .y1 = LV_MAX(cy - dot / 2, inner->y1),
-                .y2 = LV_MIN(cy + (dot - 1) / 2, inner->y2),
+                .x1 = LV_MAX(LV_MAX(cx - dot / 2, inner->x1), mask_x1),
+                .x2 = LV_MIN(LV_MIN(cx + (dot - 1) / 2, inner->x2), mask_x2),
+                .y1 = py1,
+                .y2 = py2,
             };
             if(pixel.x1 > pixel.x2 || pixel.y1 > pixel.y2) continue;
-            if(!fit_area_to_rounded_mask(&pixel, mask, mask_radius)) continue;
 
             lv_draw_fill_dsc_t fill_dsc;
             lv_draw_fill_dsc_init(&fill_dsc);
@@ -1019,11 +1095,12 @@ static void status_capsule_draw_event_cb(lv_event_t * e)
     int32_t head = run_scan_position(effect->now_ms, cycle, effect->primary);
     lv_color_t glow = status_highlight_color(STATUS_RUN);
     lv_layer_t * layer = lv_event_get_layer(e);
-    int32_t cell = LV_MAX(1, inner_height / (effect->primary ? 6 : 5));
+    int32_t cell = LV_MAX(3, inner_height / (effect->primary ? 5 : 4));
+    int32_t core_cell = effect->primary ? LV_MAX(3, (cell * 2) / 3) : cell;
     int32_t mask_radius = LV_MIN(lv_obj_get_style_radius(capsule, 0), LV_MIN(width, height) / 2);
 
     draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head, cycle, band_width, glow, effect->primary ? LV_OPA_70 : LV_OPA_40, cell);
-    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_50, LV_MAX(1, cell / 2));
+    draw_run_scan_halftone(layer, &inner, &coords, mask_radius, head, cycle, core_width, color_hex(0xE8F5FF), effect->primary ? LV_OPA_80 : LV_OPA_40, core_cell);
 }
 
 static void apply_capsule_effect(lv_obj_t * capsule, StatusCapsuleEffect * effect, StatusType status, uint32_t now_ms, int32_t strength, bool primary)
@@ -1073,7 +1150,10 @@ static void apply_status_effect(ItemView * view, const TaskModel * task)
 
 static void refresh_status_effects(uint32_t now_ms)
 {
-    g_demo.status_effect_now_ms = now_ms;
+    uint32_t frame_ms = status_effect_frame_time(now_ms);
+    if(frame_ms == g_demo.status_effect_now_ms) return;
+
+    g_demo.status_effect_now_ms = frame_ms;
     for(int32_t i = 0; i < VIEW_COUNT; ++i) {
         ItemView * view = &g_demo.views[i];
         if(!view->bound || lv_obj_has_flag(view->card, LV_OBJ_FLAG_HIDDEN)) continue;
@@ -1345,6 +1425,54 @@ static bool rounded_mask_clips_capsule_corners(const ItemView * view)
     }
     if(pixel.x1 == mask.x1 && pixel.y1 == mask.y1) {
         fprintf(stderr, "smoke: rounded status mask did not clip the corner\n");
+        return false;
+    }
+
+    int32_t span_x1;
+    int32_t span_x2;
+    int32_t sample_y1 = mask.y1;
+    int32_t sample_y2 = mask.y1 + LV_MAX(1, radius / 2);
+    if(!row_span_for_rounded_mask(&mask, radius, sample_y1, sample_y2, &span_x1, &span_x2) ||
+       span_x1 <= mask.x1 || span_x2 >= mask.x2) {
+        fprintf(stderr, "smoke: rounded row span did not clip the capsule corner\n");
+        return false;
+    }
+
+    lv_area_t span_pixel = {
+        .x1 = span_x1,
+        .x2 = span_x1 + LV_MAX(0, radius / 4),
+        .y1 = sample_y1,
+        .y2 = sample_y2,
+    };
+    if(!area_is_inside_rounded_mask(&span_pixel, &mask, radius)) {
+        fprintf(stderr, "smoke: rounded row span produced an escaping pixel\n");
+        return false;
+    }
+    return true;
+}
+
+static bool run_halftone_workload_is_bounded(const ItemView * view)
+{
+    if(view == NULL || view->status == NULL) return false;
+
+    lv_area_t coords;
+    lv_obj_get_coords(view->status, &coords);
+    int32_t width = lv_area_get_width(&coords);
+    int32_t height = lv_area_get_height(&coords);
+    if(width <= 0 || height <= 0) return false;
+
+    int32_t band_width = LV_MAX(height * 2, width / 2);
+    int32_t core_width = LV_MAX(1, band_width / 3);
+    int32_t cycle = width + band_width;
+    int32_t head = run_scan_position(view->status_effect.now_ms, cycle, true);
+    int32_t cell = LV_MAX(3, height / 5);
+    int32_t core_cell = LV_MAX(3, (cell * 2) / 3);
+    int32_t broad_cells = estimate_run_halftone_cells(&coords, head, cycle, band_width, cell);
+    int32_t core_cells = estimate_run_halftone_cells(&coords, head, cycle, core_width, core_cell);
+    int32_t total_cells = broad_cells + core_cells;
+
+    if(total_cells > STATUS_HALFTONE_MAX_CELLS) {
+        fprintf(stderr, "smoke: run halftone workload too dense: %d cells\n", (int)total_cells);
         return false;
     }
     return true;
@@ -2189,7 +2317,8 @@ bool motion_demo_smoke_check(void)
     }
 
     if(!status_effect_is_animating(&g_demo.views[view_index_for(0, 1)], &g_demo.views[view_index_for(0, 3)]) ||
-       !rounded_mask_clips_capsule_corners(&g_demo.views[view_index_for(0, 3)])) {
+       !rounded_mask_clips_capsule_corners(&g_demo.views[view_index_for(0, 3)]) ||
+       !run_halftone_workload_is_bounded(&g_demo.views[view_index_for(0, 3)])) {
         return false;
     }
 
