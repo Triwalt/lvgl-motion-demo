@@ -196,6 +196,7 @@ typedef struct {
     bool binding_views;
     bool anchor_scroll_active;
     bool detail_scroll_active;
+    bool detail_scroll_opening;
     uint32_t detail_scroll_task_id;
     int32_t anchor_scroll_offset;
 } DemoState;
@@ -225,7 +226,7 @@ static void apply_overview_row_metrics(void);
 static void apply_status_effect(ItemView * view, const TaskModel * task);
 static void status_capsule_draw_event_cb(lv_event_t * e);
 static void animate_scroll_to_focus(void);
-static void follow_detail_scroll_to_focus(void);
+static void follow_detail_scroll_to_focus(bool opening);
 static void finish_detail_scroll_follow(void);
 static bool detail_scroll_follow_is_complete(void);
 static void refresh_focus_visuals(void);
@@ -995,6 +996,23 @@ static int32_t item_scroll_target(int32_t view_index)
     return item_scroll_target_for_detail_height(view_index, current_detail_target(&g_demo.views[view_index]));
 }
 
+static void recenter_focus_copy_preserving_screen_y(void)
+{
+    if(g_demo.queue_count <= 0 || !use_loop_copies() || copy_for_focus() == MIDDLE_COPY) return;
+
+    int32_t focused = focused_view_index();
+    if(focused < 0 || focused >= VIEW_COUNT || !g_demo.views[focused].bound) return;
+
+    lv_obj_update_layout(g_demo.root);
+    int32_t screen_y = current_item_content_y(focused) - lv_obj_get_scroll_y(g_demo.list);
+    int32_t logical = logical_focus();
+
+    set_focus_to_logical(logical);
+    lv_obj_update_layout(g_demo.root);
+    lv_obj_scroll_to_y(g_demo.list, current_item_content_y(focused_view_index()) - screen_y, LV_ANIM_OFF);
+    set_focus_visuals_immediate();
+}
+
 static void keep_focus_scroll_with_current_layout(const ItemView * changed_view)
 {
     if((!g_demo.anchor_scroll_active && !g_demo.detail_scroll_active) || g_demo.binding_views || g_demo.queue_count <= 0) return;
@@ -1753,7 +1771,7 @@ static bool collapse_scroll_finishes_with_detail(void)
 
     set_expanded_id(0, true);
     refresh_focus_visuals();
-    follow_detail_scroll_to_focus();
+    follow_detail_scroll_to_focus(false);
 
     int32_t final_scroll_y = lv_obj_get_scroll_y(g_demo.list);
     int32_t previous_screen_y = current_item_content_y(focused_view_index()) - final_scroll_y;
@@ -1930,6 +1948,132 @@ static bool overview_enter_focuses_visible_expanded_card(void)
     return ok;
 }
 
+static bool expand_collapse_keeps_focused_card_visible(void)
+{
+    if(g_demo.queue_count <= 4) return false;
+
+    int32_t saved_focus_seq = g_demo.focus_seq;
+    uint32_t saved_expanded_id = g_demo.expanded_id;
+    int32_t saved_scroll_y = lv_obj_get_scroll_y(g_demo.list);
+    bool saved_focus_active = g_demo.focus_active;
+    InteractionMode saved_mode = g_demo.mode;
+
+    set_expanded_id(0, false);
+    g_demo.focus_active = false;
+    g_demo.mode = MODE_OVERVIEW;
+    set_focus_to_logical(0);
+    set_focus_visuals_immediate();
+    lv_obj_scroll_to_y(g_demo.list, 0, LV_ANIM_OFF);
+    lv_obj_update_layout(g_demo.root);
+
+    g_demo.focus_active = true;
+    g_demo.mode = MODE_NAVIGATING;
+    g_demo.focus_seq = 2;
+    set_focus_visuals_immediate();
+    lv_obj_scroll_to_y(g_demo.list, item_scroll_target(focused_view_index()), LV_ANIM_OFF);
+    lv_timer_handler();
+    lv_obj_update_layout(g_demo.root);
+
+    motion_demo_handle_key(LV_KEY_ENTER);
+
+    int32_t list_h = lv_obj_get_height(g_demo.list);
+    int32_t previous_center = 0;
+    bool previous_valid = false;
+    bool ok = true;
+
+    for(uint32_t elapsed = 0; elapsed < ANIM_SCROLL_MS + ANIM_DETAIL_MS + 80U; elapsed += 8U) {
+        (void)elapsed;
+        smoke_advance_frame(8);
+        lv_obj_update_layout(g_demo.root);
+
+        int32_t focused = focused_view_index();
+        ItemView * view = &g_demo.views[focused];
+        int32_t screen_y = current_item_content_y(focused) - lv_obj_get_scroll_y(g_demo.list);
+        int32_t center = screen_y + lv_obj_get_height(view->card) / 2;
+
+        if(screen_y > list_h || screen_y + lv_obj_get_height(view->card) < 0) {
+            fprintf(stderr, "smoke: expanding focused card left viewport y=%d h=%d scroll=%d focus=%d copy=%d detail=%d\n",
+                    (int)screen_y,
+                    (int)lv_obj_get_height(view->card),
+                    (int)lv_obj_get_scroll_y(g_demo.list),
+                    (int)focused,
+                    (int)copy_for_focus(),
+                    (int)lv_obj_get_height(view->detail));
+            ok = false;
+            break;
+        }
+        if(previous_valid && abs_i32(center - previous_center) > 32) {
+            fprintf(stderr, "smoke: expanding focused card jumped center %d->%d y=%d h=%d scroll=%d detail=%d\n",
+                    (int)previous_center,
+                    (int)center,
+                    (int)screen_y,
+                    (int)lv_obj_get_height(view->card),
+                    (int)lv_obj_get_scroll_y(g_demo.list),
+                    (int)lv_obj_get_height(view->detail));
+            ok = false;
+            break;
+        }
+        previous_center = center;
+        previous_valid = true;
+    }
+
+    if(ok) {
+        motion_demo_handle_key(LV_KEY_ENTER);
+        previous_valid = false;
+        for(uint32_t elapsed = 0; elapsed < ANIM_DETAIL_COLLAPSE_MS + 120U; elapsed += 8U) {
+            (void)elapsed;
+            smoke_advance_frame(8);
+            lv_obj_update_layout(g_demo.root);
+
+            int32_t focused = focused_view_index();
+            ItemView * view = &g_demo.views[focused];
+            int32_t screen_y = current_item_content_y(focused) - lv_obj_get_scroll_y(g_demo.list);
+            int32_t center = screen_y + lv_obj_get_height(view->card) / 2;
+
+            if(screen_y > list_h || screen_y + lv_obj_get_height(view->card) < 0) {
+                fprintf(stderr, "smoke: collapsing focused card left viewport y=%d h=%d scroll=%d focus=%d copy=%d detail=%d\n",
+                        (int)screen_y,
+                        (int)lv_obj_get_height(view->card),
+                        (int)lv_obj_get_scroll_y(g_demo.list),
+                        (int)focused,
+                        (int)copy_for_focus(),
+                        (int)lv_obj_get_height(view->detail));
+                ok = false;
+                break;
+            }
+            if(previous_valid && abs_i32(center - previous_center) > 32) {
+                fprintf(stderr, "smoke: collapsing focused card jumped center %d->%d y=%d h=%d scroll=%d detail=%d\n",
+                        (int)previous_center,
+                        (int)center,
+                        (int)screen_y,
+                        (int)lv_obj_get_height(view->card),
+                        (int)lv_obj_get_scroll_y(g_demo.list),
+                        (int)lv_obj_get_height(view->detail));
+                ok = false;
+                break;
+            }
+            previous_center = center;
+            previous_valid = true;
+
+            if(lv_obj_get_height(view->detail) <= 0 && lv_anim_get(view, detail_exec_cb) == NULL) {
+                break;
+            }
+        }
+    }
+
+    set_expanded_id(0, false);
+    stop_anchor_scroll();
+    set_expanded_id(saved_expanded_id, false);
+    g_demo.focus_seq = saved_focus_seq;
+    g_demo.focus_active = saved_focus_active;
+    g_demo.mode = saved_mode;
+    set_focus_visuals_immediate();
+    lv_obj_scroll_to_y(g_demo.list, saved_scroll_y, LV_ANIM_OFF);
+    lv_obj_update_layout(g_demo.root);
+
+    return ok;
+}
+
 static void measure_and_apply_details(void)
 {
     lv_obj_update_layout(g_demo.root);
@@ -2038,6 +2182,7 @@ static void scroll_completed_cb(lv_anim_t * anim)
     g_demo.recenter_after_scroll = false;
     g_demo.anchor_scroll_active = false;
     g_demo.detail_scroll_active = false;
+    g_demo.detail_scroll_opening = false;
     g_demo.detail_scroll_task_id = 0;
     g_demo.anchor_scroll_offset = 0;
     g_demo.busy = false;
@@ -2048,6 +2193,7 @@ static void stop_anchor_scroll(void)
     lv_anim_delete(&g_demo, anchor_scroll_exec_cb);
     g_demo.anchor_scroll_active = false;
     g_demo.detail_scroll_active = false;
+    g_demo.detail_scroll_opening = false;
     g_demo.detail_scroll_task_id = 0;
     g_demo.anchor_scroll_offset = 0;
     g_demo.recenter_after_scroll = false;
@@ -2061,6 +2207,7 @@ static void animate_scroll_to_focus(void)
 
     g_demo.busy = true;
     g_demo.detail_scroll_active = false;
+    g_demo.detail_scroll_opening = false;
     g_demo.detail_scroll_task_id = 0;
     g_demo.recenter_after_scroll = g_demo.focus_seq < g_demo.queue_count || g_demo.focus_seq >= (g_demo.queue_count * 2);
     g_demo.anchor_scroll_active = true;
@@ -2082,7 +2229,7 @@ static void animate_scroll_to_focus(void)
     lv_anim_start(&anim);
 }
 
-static void follow_detail_scroll_to_focus(void)
+static void follow_detail_scroll_to_focus(bool opening)
 {
     if(g_demo.queue_count <= 0) return;
     lv_anim_delete(&g_demo, anchor_scroll_exec_cb);
@@ -2092,6 +2239,7 @@ static void follow_detail_scroll_to_focus(void)
     g_demo.recenter_after_scroll = false;
     g_demo.busy = false;
     g_demo.detail_scroll_active = true;
+    g_demo.detail_scroll_opening = opening;
     g_demo.detail_scroll_task_id = g_demo.queue[logical_focus()].id;
     lv_obj_scroll_to_y(g_demo.list, current_item_scroll_target(focused_view_index()), LV_ANIM_OFF);
 
@@ -2106,6 +2254,7 @@ static void finish_detail_scroll_follow(void)
         lv_obj_scroll_to_y(g_demo.list, current_item_scroll_target(focused_view_index()), LV_ANIM_OFF);
     }
     g_demo.detail_scroll_active = false;
+    g_demo.detail_scroll_opening = false;
     g_demo.detail_scroll_task_id = 0;
 }
 
@@ -2124,9 +2273,13 @@ static bool detail_scroll_follow_is_complete(void)
     for(int32_t i = 0; i <= focused && i < VIEW_COUNT; ++i) {
         ItemView * view = &g_demo.views[i];
         if(!view->bound || view->task_id != task_id) continue;
-        if(lv_anim_get(view, detail_exec_cb) != NULL || lv_obj_get_height(view->detail) > 0) {
+        if(lv_anim_get(view, detail_exec_cb) != NULL) {
             return false;
         }
+        if(g_demo.detail_scroll_opening) {
+            if(lv_obj_get_height(view->detail) < view->expanded_height) return false;
+        }
+        else if(lv_obj_get_height(view->detail) > 0) return false;
     }
 
     return true;
@@ -2259,6 +2412,7 @@ static void cancel_active_scroll_for_input(void)
     lv_anim_delete(&g_demo, anchor_scroll_exec_cb);
     g_demo.anchor_scroll_active = false;
     g_demo.detail_scroll_active = false;
+    g_demo.detail_scroll_opening = false;
     g_demo.detail_scroll_task_id = 0;
     g_demo.anchor_scroll_offset = 0;
 
@@ -2303,10 +2457,16 @@ static void expand_focused_task(bool animate)
     activate_focus();
     TaskModel * task = &g_demo.queue[logical_focus()];
     mark_current_new_seen();
+    recenter_focus_copy_preserving_screen_y();
     set_expanded_id(task->id, animate);
     set_mode_for_task(task);
     refresh_focus_visuals();
-    animate_scroll_to_focus();
+    if(animate) {
+        follow_detail_scroll_to_focus(true);
+    }
+    else {
+        animate_scroll_to_focus();
+    }
 }
 
 static bool select_next_pending_for_decision(void)
@@ -2466,7 +2626,7 @@ static void toggle_detail(void)
     }
 
     refresh_focus_visuals();
-    follow_detail_scroll_to_focus();
+    follow_detail_scroll_to_focus(false);
 }
 
 static void enter_completed_cb(lv_anim_t * anim)
@@ -2837,6 +2997,7 @@ bool motion_demo_smoke_check(void)
        !run_halftone_workload_is_bounded(&g_demo.views[view_index_for(0, 3)]) ||
        !run_scan_curve_is_continuous() ||
        !overview_enter_focuses_visible_expanded_card() ||
+       !expand_collapse_keeps_focused_card_visible() ||
        !collapse_scroll_finishes_with_detail()) {
         return false;
     }
@@ -3204,6 +3365,11 @@ void motion_demo_create(lv_obj_t * parent)
     g_demo.delete_focus_id = 0;
     g_demo.deleting_index = 0;
     g_demo.deleting_was_expanded = false;
+    g_demo.anchor_scroll_active = false;
+    g_demo.detail_scroll_active = false;
+    g_demo.detail_scroll_opening = false;
+    g_demo.detail_scroll_task_id = 0;
+    g_demo.anchor_scroll_offset = 0;
 
     lv_obj_t * list = lv_obj_create(parent);
     g_demo.list = list;
