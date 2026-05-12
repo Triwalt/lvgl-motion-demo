@@ -64,6 +64,7 @@ enum {
     ANIM_SCROLL_MS = 420,
     ANIM_CARD_MS = 320,
     ANIM_DETAIL_MS = 360,
+    ANIM_DETAIL_COLLAPSE_MS = 480,
     ANIM_QUEUE_MS = 330,
     ANIM_PULSE_MS = 520,
     OVERVIEW_ROW_HEIGHT = 88,
@@ -74,6 +75,7 @@ enum {
     ROW_CONTENT_CENTER_TOLERANCE = 2,
     ROW_CONTENT_INSET_LEFT = 14,
     ROW_CONTENT_INSET_RIGHT = 12,
+    DETAIL_ROW_GAP = 10,
     ROW_TEXT_GLYPH_TRANSLATE_Y = -3,
     CAPSULE_LABEL_CENTER_TOLERANCE = 1,
     CARD_BORDER_WIDTH = 2,
@@ -161,6 +163,7 @@ typedef struct {
     uint32_t task_id;
     int32_t logical_index;
     int32_t expanded_height;
+    int32_t expanded_row_height;
     int32_t visual;
     int32_t transition;
     int32_t pulse;
@@ -431,6 +434,65 @@ static void set_classic_smooth_motion(lv_anim_t * anim, uint32_t duration_ms)
     lv_anim_set_duration(anim, duration_ms);
     lv_anim_set_path_cb(anim, lv_anim_path_custom_bezier3);
     LV_ANIM_SET_EASE_OUT_QUINT(anim);
+}
+
+static int32_t cubic_hermite_i32(int32_t h00,
+                                 int32_t h10,
+                                 int32_t h01,
+                                 int32_t h11,
+                                 int32_t t_num,
+                                 int32_t t_den)
+{
+    if(t_den <= 0) return h01;
+
+    int64_t t = ((int64_t)t_num * 1024) / t_den;
+    t = clamp_i32((int32_t)t, 0, 1024);
+    int64_t t2 = (t * t) / 1024;
+    int64_t t3 = (t2 * t) / 1024;
+    int64_t b00 = (2 * t3) - (3 * t2) + 1024;
+    int64_t b10 = t3 - (2 * t2) + t;
+    int64_t b01 = (-2 * t3) + (3 * t2);
+    int64_t b11 = t3 - t2;
+
+    return (int32_t)((b00 * h00 + b10 * h10 + b01 * h01 + b11 * h11 + 512) / 1024);
+}
+
+/* Collapse needs a long, low-speed tail so integer-sized cards do not drop in visible steps. */
+static int32_t collapse_detail_path_cb(const lv_anim_t * anim)
+{
+    int32_t start = anim->start_value;
+    int32_t end = anim->end_value;
+    if(start <= end || anim->duration == 0) {
+        return lv_anim_path_linear(anim);
+    }
+
+    int32_t detail_range = start - end;
+    int32_t tail_range = LV_MIN(detail_range, LV_MAX(80, detail_range / 3));
+    uint32_t tail_duration = LV_MIN(anim->duration - 1U, LV_MAX((uint32_t)280, anim->duration / 2U));
+    uint32_t main_duration = anim->duration > tail_duration ? anim->duration - tail_duration : 1;
+    uint32_t act_time = (uint32_t)clamp_i32(anim->act_time, 0, (int32_t)anim->duration);
+    int32_t tail_start = end + tail_range;
+    int32_t tail_start_velocity = -(int32_t)((int64_t)tail_range * (int64_t)main_duration / (int64_t)tail_duration);
+
+    if(act_time < main_duration) {
+        return cubic_hermite_i32(start, 0, tail_start, tail_start_velocity, (int32_t)act_time, (int32_t)main_duration);
+    }
+
+    uint32_t tail_time = act_time - main_duration;
+    return cubic_hermite_i32(tail_start, -tail_range, end, 0, (int32_t)tail_time, (int32_t)tail_duration);
+}
+
+static void set_detail_motion(lv_anim_t * anim, bool opening)
+{
+    if(opening) {
+        lv_anim_set_duration(anim, ANIM_DETAIL_MS);
+        lv_anim_set_path_cb(anim, lv_anim_path_custom_bezier3);
+        LV_ANIM_SET_EASE_OUT_QUINT(anim);
+    }
+    else {
+        lv_anim_set_duration(anim, ANIM_DETAIL_COLLAPSE_MS);
+        lv_anim_set_path_cb(anim, collapse_detail_path_cb);
+    }
 }
 
 static const char * status_text(StatusType status)
@@ -730,29 +792,35 @@ static void set_card_style(ItemView * view)
 {
     TaskModel * task = task_by_id(view->task_id);
     bool focused = g_demo.focus_active && view->bound && focused_view_index() == (int32_t)(view - g_demo.views);
-    bool overview = !g_demo.focus_active && g_demo.expanded_id == 0;
-    bool expanded = view->bound && view->task_id == g_demo.expanded_id;
     bool notified = task != NULL && task->notify_state != NOTIFY_NONE;
+    int32_t detail_ref = view->expanded_height > 0 ? view->expanded_height : 1;
+    int32_t expanded_mix = view->bound ? clamp_i32((lv_obj_get_height(view->detail) * 256 + detail_ref / 2) / detail_ref, 0, 256) : 0;
+    bool overview = !g_demo.focus_active && g_demo.expanded_id == 0 && expanded_mix == 0;
 
     int32_t visual = overview ? VISUAL_OVERVIEW : clamp_i32(view->visual, VISUAL_OFF, VISUAL_ON);
     int32_t transition = clamp_i32(view->transition, TRANSITION_OFF, TRANSITION_ON);
     int32_t enter_scale = 236 + ((20 * transition) / TRANSITION_ON);
     int32_t scale = transition < TRANSITION_ON ? enter_scale : 256;
     int32_t opacity = (180 + ((75 * visual) / VISUAL_ON)) * transition / TRANSITION_ON;
-    int32_t bg_opa = expanded ? 58 : (focused ? 32 : (notified ? 12 : 0));
-    int32_t border_opa = expanded ? CARD_BORDER_OPA_EXPANDED :
-                          (focused ? CARD_BORDER_OPA_FOCUSED :
-                           (notified ? CARD_BORDER_OPA_NOTIFY :
-                            (overview ? CARD_BORDER_OPA_OVERVIEW : CARD_BORDER_OPA_BASE)));
+    int32_t base_bg_opa = focused ? 32 : (notified ? 12 : 0);
+    int32_t bg_opa = base_bg_opa + (((58 - base_bg_opa) * expanded_mix) / 256);
+    int32_t base_border_opa = focused ? CARD_BORDER_OPA_FOCUSED :
+                              (notified ? CARD_BORDER_OPA_NOTIFY :
+                               (overview ? CARD_BORDER_OPA_OVERVIEW : CARD_BORDER_OPA_BASE));
+    int32_t border_opa = base_border_opa + (((CARD_BORDER_OPA_EXPANDED - base_border_opa) * expanded_mix) / 256);
     int32_t pulse_opa = view->pulse / 3;
     lv_color_t accent = task != NULL ? status_color(task->status) : color_hex(0x2E3B4E);
-    lv_color_t border_color = focused || expanded || notified ? accent : color_hex(0x56606A);
+    lv_color_t base_bg = color_hex(0x1A1D1C);
+    lv_color_t expanded_bg = color_hex(0x202427);
+    lv_color_t border_color = focused || expanded_mix > 0 || notified ? accent : color_hex(0x56606A);
+    int32_t base_shadow = focused ? 12 : 0;
+    int32_t shadow_width = base_shadow + (((12 - base_shadow) * expanded_mix) / 256);
 
-    lv_obj_set_style_bg_color(view->card, expanded ? color_hex(0x202427) : color_hex(0x1A1D1C), 0);
+    lv_obj_set_style_bg_color(view->card, lv_color_mix(expanded_bg, base_bg, (uint8_t)clamp_i32((expanded_mix * 255) / 256, 0, 255)), 0);
     lv_obj_set_style_bg_opa(view->card, (lv_opa_t)clamp_i32(bg_opa + pulse_opa, LV_OPA_TRANSP, LV_OPA_80), 0);
     lv_obj_set_style_transform_scale_x(view->card, scale, 0);
     lv_obj_set_style_transform_scale_y(view->card, scale, 0);
-    lv_obj_set_style_shadow_width(view->card, focused || expanded ? 12 : 0, 0);
+    lv_obj_set_style_shadow_width(view->card, shadow_width, 0);
     lv_obj_set_style_border_width(view->card, CARD_BORDER_WIDTH, 0);
     lv_obj_set_style_border_color(view->card, border_color, 0);
     lv_obj_set_style_border_opa(view->card, (lv_opa_t)clamp_i32(border_opa, LV_OPA_TRANSP, LV_OPA_COVER), 0);
@@ -796,16 +864,35 @@ static int32_t current_detail_target(ItemView * view)
 
 static int32_t current_item_scroll_target(int32_t view_index);
 
+static int32_t detail_gap_for_height(const ItemView * view, int32_t detail_height)
+{
+    if(view == NULL || detail_height <= 0) return 0;
+
+    int32_t detail_ref = view->expanded_height > 0 ? view->expanded_height : detail_height;
+    return clamp_i32((DETAIL_ROW_GAP * detail_height + detail_ref / 2) / detail_ref, 0, DETAIL_ROW_GAP);
+}
+
+static int32_t row_height_for_detail(const ItemView * view, int32_t detail_height)
+{
+    if(view == NULL || detail_height <= 0) return OVERVIEW_ROW_HEIGHT;
+
+    /* The row itself stays content-sized; this is the visible height budget inside the clipped card. */
+    int32_t detail_ref = view->expanded_height > 0 ? view->expanded_height : detail_height;
+    int32_t expanded_row = LV_MAX(view->expanded_row_height, OVERVIEW_ROW_HEIGHT);
+    int32_t row_extra = expanded_row - OVERVIEW_ROW_HEIGHT;
+    return OVERVIEW_ROW_HEIGHT + clamp_i32((row_extra * detail_height + detail_ref / 2) / detail_ref, 0, row_extra);
+}
+
 static int32_t predicted_card_height(ItemView * view, int32_t target_detail_height)
 {
     lv_obj_update_layout(g_demo.root);
 
-    int32_t predicted = lv_obj_get_height(view->row);
+    int32_t predicted = row_height_for_detail(view, target_detail_height);
     predicted += lv_obj_get_style_pad_top(view->card, 0);
     predicted += lv_obj_get_style_pad_bottom(view->card, 0);
 
     if(target_detail_height > 0) {
-        predicted += lv_obj_get_style_pad_row(view->card, 0);
+        predicted += detail_gap_for_height(view, target_detail_height);
         predicted += target_detail_height;
     }
 
@@ -838,9 +925,11 @@ static void detail_exec_cb(void * var, int32_t value)
     if(detail_height > 0 || view->task_id == g_demo.expanded_id) {
         lv_obj_clear_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
     }
+    lv_obj_set_style_pad_row(view->card, detail_gap_for_height(view, detail_height), 0);
     lv_obj_set_height(view->detail, detail_height);
     lv_obj_set_style_opa(view->detail, (lv_opa_t)clamp_i32(opacity, LV_OPA_TRANSP, LV_OPA_COVER), 0);
     lv_obj_set_height(view->card, predicted_card_height(view, detail_height));
+    set_card_style(view);
     if(detail_height <= 0 && view->task_id != g_demo.expanded_id) {
         lv_obj_add_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(view->card, OVERVIEW_ROW_HEIGHT);
@@ -1322,10 +1411,12 @@ static void hide_view(ItemView * view)
     view->task_id = 0;
     view->logical_index = -1;
     view->expanded_height = 0;
+    view->expanded_row_height = OVERVIEW_ROW_HEIGHT;
     view->visual = VISUAL_OFF;
     view->transition = TRANSITION_ON;
     view->pulse = PULSE_OFF;
     stop_view_animations(view);
+    lv_obj_set_height(view->row, LV_SIZE_CONTENT);
     lv_obj_set_height(view->detail, 0);
     lv_obj_add_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_height(view->card, LV_SIZE_CONTENT);
@@ -1663,11 +1754,32 @@ static bool collapse_scroll_finishes_with_detail(void)
     follow_detail_scroll_to_focus();
 
     int32_t final_scroll_y = lv_obj_get_scroll_y(g_demo.list);
-    for(uint32_t elapsed = 0; elapsed < ANIM_DETAIL_MS + 80U; elapsed += 8U) {
+    int32_t previous_screen_y = current_item_content_y(focused_view_index()) - final_scroll_y;
+    int32_t previous_card_h = lv_obj_get_height(g_demo.views[focused_view_index()].card);
+    int32_t previous_detail_h = lv_obj_get_height(g_demo.views[focused_view_index()].detail);
+    for(uint32_t elapsed = 0; elapsed < ANIM_DETAIL_COLLAPSE_MS + 80U; elapsed += 8U) {
         (void)elapsed;
         smoke_advance_frame(8);
         final_scroll_y = lv_obj_get_scroll_y(g_demo.list);
         ItemView * focused_view = &g_demo.views[focused_view_index()];
+        int32_t screen_y = current_item_content_y(focused_view_index()) - final_scroll_y;
+        int32_t card_h = lv_obj_get_height(focused_view->card);
+        int32_t detail_h = lv_obj_get_height(focused_view->detail);
+        if(detail_h <= 56 && (abs_i32(previous_detail_h - detail_h) > 4 ||
+                              abs_i32(screen_y - previous_screen_y) > 2 ||
+                              abs_i32(card_h - previous_card_h) > 4)) {
+            fprintf(stderr, "smoke: collapse tail jumped at detail %d->%d screen_y %d->%d card_h %d->%d\n",
+                    (int)previous_detail_h,
+                    (int)detail_h,
+                    (int)previous_screen_y,
+                    (int)screen_y,
+                    (int)previous_card_h,
+                    (int)card_h);
+            return false;
+        }
+        previous_screen_y = screen_y;
+        previous_card_h = card_h;
+        previous_detail_h = detail_h;
         if(detail_scroll_follow_is_complete() && lv_anim_get(focused_view, detail_exec_cb) == NULL && lv_obj_get_height(focused_view->detail) <= 0) {
             break;
         }
@@ -1745,10 +1857,12 @@ static void measure_and_apply_details(void)
         if(!view->bound) continue;
 
         lv_obj_clear_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(view->row, LV_SIZE_CONTENT);
         lv_obj_set_height(view->detail, LV_SIZE_CONTENT);
         lv_obj_set_style_opa(view->detail, LV_OPA_COVER, 0);
         lv_obj_update_layout(g_demo.root);
 
+        view->expanded_row_height = LV_MAX(lv_obj_get_height(view->row), OVERVIEW_ROW_HEIGHT);
         int32_t natural_height = lv_obj_get_height(view->detail);
         int32_t label_height = lv_obj_get_height(view->detail_label);
         label_height += lv_obj_get_style_pad_top(view->detail, 0);
@@ -1789,6 +1903,7 @@ static void bind_views_from_queue(uint32_t entering_id)
             view->bound = true;
             view->task_id = task->id;
             view->logical_index = slot;
+            view->expanded_row_height = OVERVIEW_ROW_HEIGHT;
             view->visual = target_visual_for_view(view_index);
             view->transition = task->entering && task->id == entering_id ? TRANSITION_OFF : TRANSITION_ON;
             view->pulse = 0;
@@ -1800,6 +1915,7 @@ static void bind_views_from_queue(uint32_t entering_id)
             bind_status(view, task);
             update_detail_content(view, task);
             lv_obj_set_width(view->card, lv_pct(100));
+            lv_obj_set_height(view->row, LV_SIZE_CONTENT);
             lv_obj_set_height(view->card, task->id == g_demo.expanded_id ? LV_SIZE_CONTENT : OVERVIEW_ROW_HEIGHT);
             set_card_style(view);
         }
@@ -1998,7 +2114,7 @@ static void animate_detail_for_id(uint32_t task_id, bool opening)
         lv_anim_set_var(&anim, view);
         lv_anim_set_exec_cb(&anim, detail_exec_cb);
         lv_anim_set_values(&anim, start, end);
-        set_classic_smooth_motion(&anim, ANIM_DETAIL_MS);
+        set_detail_motion(&anim, opening);
         lv_anim_start(&anim);
     }
 }
@@ -2835,7 +2951,7 @@ static void create_view(size_t physical_index)
     lv_obj_set_style_pad_right(card, 0, 0);
     lv_obj_set_style_pad_top(card, 0, 0);
     lv_obj_set_style_pad_bottom(card, 0, 0);
-    lv_obj_set_style_pad_row(card, 10, 0);
+    lv_obj_set_style_pad_row(card, DETAIL_ROW_GAP, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
