@@ -64,7 +64,7 @@ enum {
     ANIM_SCROLL_MS = 420,
     ANIM_CARD_MS = 320,
     ANIM_DETAIL_MS = 360,
-    ANIM_DETAIL_COLLAPSE_MS = 480,
+    ANIM_DETAIL_COLLAPSE_MS = 340,
     ANIM_QUEUE_MS = 330,
     ANIM_PULSE_MS = 520,
     OVERVIEW_ROW_HEIGHT = 88,
@@ -458,7 +458,7 @@ static int32_t cubic_hermite_i32(int32_t h00,
     return (int32_t)((b00 * h00 + b10 * h10 + b01 * h01 + b11 * h11 + 512) / 1024);
 }
 
-/* Collapse needs a long, low-speed tail so integer-sized cards do not drop in visible steps. */
+/* Collapse needs a short, low-speed tail so integer-sized cards do not drop in visible steps. */
 static int32_t collapse_detail_path_cb(const lv_anim_t * anim)
 {
     int32_t start = anim->start_value;
@@ -468,8 +468,8 @@ static int32_t collapse_detail_path_cb(const lv_anim_t * anim)
     }
 
     int32_t detail_range = start - end;
-    int32_t tail_range = LV_MIN(detail_range, LV_MAX(80, detail_range / 3));
-    uint32_t tail_duration = LV_MIN(anim->duration - 1U, LV_MAX((uint32_t)280, anim->duration / 2U));
+    int32_t tail_range = LV_MIN(detail_range, 56);
+    uint32_t tail_duration = LV_MIN(anim->duration - 1U, LV_MAX((uint32_t)200, anim->duration / 3U));
     uint32_t main_duration = anim->duration > tail_duration ? anim->duration - tail_duration : 1;
     uint32_t act_time = (uint32_t)clamp_i32(anim->act_time, 0, (int32_t)anim->duration);
     int32_t tail_start = end + tail_range;
