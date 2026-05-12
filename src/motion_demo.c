@@ -779,7 +779,7 @@ static int32_t predicted_card_height(ItemView * view, int32_t target_detail_heig
         predicted += target_detail_height;
     }
 
-    return LV_MAX(predicted, 1);
+    return LV_MAX(predicted, OVERVIEW_ROW_HEIGHT);
 }
 
 static void transition_exec_cb(void * var, int32_t value)
@@ -802,15 +802,16 @@ static void transition_exec_cb(void * var, int32_t value)
 static void detail_exec_cb(void * var, int32_t value)
 {
     ItemView * view = (ItemView *)var;
+    int32_t detail_height = LV_MAX(value, 0);
     int32_t target = view->expanded_height > 0 ? view->expanded_height : 1;
-    int32_t opacity = (value * LV_OPA_COVER) / target;
-    if(value > 0 || view->task_id == g_demo.expanded_id) {
+    int32_t opacity = (detail_height * LV_OPA_COVER) / target;
+    if(detail_height > 0 || view->task_id == g_demo.expanded_id) {
         lv_obj_clear_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(view->card, LV_SIZE_CONTENT);
     }
-    lv_obj_set_height(view->detail, value);
+    lv_obj_set_height(view->detail, detail_height);
     lv_obj_set_style_opa(view->detail, (lv_opa_t)clamp_i32(opacity, LV_OPA_TRANSP, LV_OPA_COVER), 0);
-    if(value <= 0 && view->task_id != g_demo.expanded_id) {
+    lv_obj_set_height(view->card, predicted_card_height(view, detail_height));
+    if(detail_height <= 0 && view->task_id != g_demo.expanded_id) {
         lv_obj_add_flag(view->detail, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(view->card, OVERVIEW_ROW_HEIGHT);
     }
@@ -1549,6 +1550,58 @@ static bool run_scan_curve_is_continuous(void)
         fprintf(stderr, "smoke: run scan brightness curve has a large step: %d\n", (int)max_energy_step);
         return false;
     }
+    return true;
+}
+
+static bool collapsing_detail_height_is_continuous(ItemView * view)
+{
+    if(view == NULL || !view->bound || view->expanded_height <= 0) return false;
+
+    uint32_t saved_expanded_id = g_demo.expanded_id;
+    int32_t samples[] = {
+        view->expanded_height,
+        view->expanded_height / 2,
+        8,
+        1,
+        0,
+    };
+    int32_t previous_height = 0;
+    bool previous_valid = false;
+
+    for(size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); ++i) {
+        g_demo.expanded_id = samples[i] > 0 ? view->task_id : 0;
+        detail_exec_cb(view, samples[i]);
+        lv_obj_update_layout(g_demo.root);
+
+        int32_t card_height = lv_obj_get_height(view->card);
+        if(card_height < OVERVIEW_ROW_HEIGHT) {
+            fprintf(stderr, "smoke: collapsing card undershot overview height: %d\n", (int)card_height);
+            g_demo.expanded_id = saved_expanded_id;
+            return false;
+        }
+        if(previous_valid && card_height > previous_height) {
+            fprintf(stderr, "smoke: collapsing card rebounded from %d to %d\n",
+                    (int)previous_height,
+                    (int)card_height);
+            g_demo.expanded_id = saved_expanded_id;
+            return false;
+        }
+
+        previous_height = card_height;
+        previous_valid = true;
+    }
+
+    if(lv_obj_get_height(view->card) != OVERVIEW_ROW_HEIGHT) {
+        fprintf(stderr, "smoke: collapsed card ended at %dpx instead of %dpx\n",
+                (int)lv_obj_get_height(view->card),
+                (int)OVERVIEW_ROW_HEIGHT);
+        g_demo.expanded_id = saved_expanded_id;
+        return false;
+    }
+
+    g_demo.expanded_id = saved_expanded_id;
+    detail_exec_cb(view, saved_expanded_id == view->task_id ? view->expanded_height : 0);
+    lv_obj_update_layout(g_demo.root);
     return true;
 }
 
@@ -2471,6 +2524,9 @@ bool motion_demo_smoke_check(void)
     if(!row_content_stays_inside_card(expanded_view) ||
        !capsule_label_is_vertically_centered(expanded_view, "status", expanded_view->status, expanded_view->status_label) ||
        !capsule_label_is_vertically_centered(expanded_view, "age", expanded_view->age, expanded_view->age_label)) {
+        return false;
+    }
+    if(!collapsing_detail_height_is_continuous(expanded_view)) {
         return false;
     }
 
