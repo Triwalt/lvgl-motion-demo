@@ -791,10 +791,12 @@ static void mark_current_new_seen(void)
 static void set_card_style(ItemView * view)
 {
     TaskModel * task = task_by_id(view->task_id);
-    bool focused = g_demo.focus_active && view->bound && focused_view_index() == (int32_t)(view - g_demo.views);
+    int32_t view_index = (int32_t)(view - g_demo.views);
+    bool focused = g_demo.focus_active && view->bound && focused_view_index() == view_index;
     bool notified = task != NULL && task->notify_state != NOTIFY_NONE;
     int32_t detail_ref = view->expanded_height > 0 ? view->expanded_height : 1;
     int32_t expanded_mix = view->bound ? clamp_i32((lv_obj_get_height(view->detail) * 256 + detail_ref / 2) / detail_ref, 0, 256) : 0;
+    int32_t visual_mix = focused ? expanded_mix : 0;
     bool overview = !g_demo.focus_active && g_demo.expanded_id == 0 && expanded_mix == 0;
 
     int32_t visual = overview ? VISUAL_OVERVIEW : clamp_i32(view->visual, VISUAL_OFF, VISUAL_ON);
@@ -803,20 +805,20 @@ static void set_card_style(ItemView * view)
     int32_t scale = transition < TRANSITION_ON ? enter_scale : 256;
     int32_t opacity = (180 + ((75 * visual) / VISUAL_ON)) * transition / TRANSITION_ON;
     int32_t base_bg_opa = focused ? 32 : (notified ? 12 : 0);
-    int32_t bg_opa = base_bg_opa + (((58 - base_bg_opa) * expanded_mix) / 256);
+    int32_t bg_opa = base_bg_opa + (((58 - base_bg_opa) * visual_mix) / 256);
     int32_t base_border_opa = focused ? CARD_BORDER_OPA_FOCUSED :
                               (notified ? CARD_BORDER_OPA_NOTIFY :
                                (overview ? CARD_BORDER_OPA_OVERVIEW : CARD_BORDER_OPA_BASE));
-    int32_t border_opa = base_border_opa + (((CARD_BORDER_OPA_EXPANDED - base_border_opa) * expanded_mix) / 256);
+    int32_t border_opa = base_border_opa + (((CARD_BORDER_OPA_EXPANDED - base_border_opa) * visual_mix) / 256);
     int32_t pulse_opa = view->pulse / 3;
     lv_color_t accent = task != NULL ? status_color(task->status) : color_hex(0x2E3B4E);
     lv_color_t base_bg = color_hex(0x1A1D1C);
     lv_color_t expanded_bg = color_hex(0x202427);
-    lv_color_t border_color = focused || expanded_mix > 0 || notified ? accent : color_hex(0x56606A);
+    lv_color_t border_color = focused || notified ? accent : color_hex(0x56606A);
     int32_t base_shadow = focused ? 12 : 0;
-    int32_t shadow_width = base_shadow + (((12 - base_shadow) * expanded_mix) / 256);
+    int32_t shadow_width = base_shadow + (((12 - base_shadow) * visual_mix) / 256);
 
-    lv_obj_set_style_bg_color(view->card, lv_color_mix(expanded_bg, base_bg, (uint8_t)clamp_i32((expanded_mix * 255) / 256, 0, 255)), 0);
+    lv_obj_set_style_bg_color(view->card, lv_color_mix(expanded_bg, base_bg, (uint8_t)clamp_i32((visual_mix * 255) / 256, 0, 255)), 0);
     lv_obj_set_style_bg_opa(view->card, (lv_opa_t)clamp_i32(bg_opa + pulse_opa, LV_OPA_TRANSP, LV_OPA_80), 0);
     lv_obj_set_style_transform_scale_x(view->card, scale, 0);
     lv_obj_set_style_transform_scale_y(view->card, scale, 0);
@@ -1846,6 +1848,88 @@ static bool collapse_scroll_finishes_with_detail(void)
     return true;
 }
 
+static bool overview_enter_focuses_visible_expanded_card(void)
+{
+    if(g_demo.queue_count <= 0) return false;
+
+    int32_t saved_focus_seq = g_demo.focus_seq;
+    uint32_t saved_expanded_id = g_demo.expanded_id;
+    int32_t saved_scroll_y = lv_obj_get_scroll_y(g_demo.list);
+    bool saved_focus_active = g_demo.focus_active;
+    InteractionMode saved_mode = g_demo.mode;
+
+    set_expanded_id(0, false);
+    g_demo.focus_active = false;
+    g_demo.mode = MODE_OVERVIEW;
+    set_focus_to_logical(0);
+    set_focus_visuals_immediate();
+    lv_obj_scroll_to_y(g_demo.list, 0, LV_ANIM_OFF);
+    lv_obj_update_layout(g_demo.root);
+
+    motion_demo_handle_key(LV_KEY_ENTER);
+    for(uint32_t elapsed = 0; elapsed < ANIM_SCROLL_MS + ANIM_DETAIL_MS + 80U; elapsed += 8U) {
+        (void)elapsed;
+        smoke_advance_frame(8);
+    }
+    lv_timer_handler();
+    lv_obj_update_layout(g_demo.root);
+
+    int32_t focused = focused_view_index();
+    ItemView * focused_view = &g_demo.views[focused];
+    int32_t list_h = lv_obj_get_height(g_demo.list);
+    int32_t screen_y = current_item_content_y(focused) - lv_obj_get_scroll_y(g_demo.list);
+    int32_t screen_center = screen_y + lv_obj_get_height(focused_view->card) / 2;
+    int32_t target_center = list_h / 2;
+    bool ok = true;
+
+    if(!focused_view->bound || focused_view->task_id != g_demo.expanded_id || g_demo.expanded_id == 0) {
+        fprintf(stderr, "smoke: overview enter lost expanded focus target\n");
+        ok = false;
+    }
+    else if(lv_obj_get_style_border_opa(focused_view->card, 0) < CARD_BORDER_OPA_FOCUSED) {
+        fprintf(stderr, "smoke: overview enter focused card border is too faint\n");
+        ok = false;
+    }
+    else if(abs_i32(screen_center - target_center) > 3) {
+        fprintf(stderr, "smoke: overview enter focused card center %d misses target %d y=%d h=%d scroll=%d target=%d detail=%d focus=%d seq=%d copy=%d\n",
+                (int)screen_center,
+                (int)target_center,
+                (int)screen_y,
+                (int)lv_obj_get_height(focused_view->card),
+                (int)lv_obj_get_scroll_y(g_demo.list),
+                (int)current_item_scroll_target(focused),
+                (int)lv_obj_get_height(focused_view->detail),
+                (int)focused,
+                (int)g_demo.focus_seq,
+                (int)copy_for_focus());
+        ok = false;
+    }
+    else {
+        for(int32_t i = 0; i < VIEW_COUNT; ++i) {
+            ItemView * view = &g_demo.views[i];
+            if(!view->bound || i == focused || view->task_id != g_demo.expanded_id) continue;
+            if(lv_obj_get_style_shadow_width(view->card, 0) > 0 ||
+               lv_obj_get_style_border_opa(view->card, 0) >= CARD_BORDER_OPA_FOCUSED) {
+                fprintf(stderr, "smoke: mirrored expanded view %d kept focus styling\n", (int)i);
+                ok = false;
+                break;
+            }
+        }
+    }
+
+    set_expanded_id(0, false);
+    stop_anchor_scroll();
+    set_expanded_id(saved_expanded_id, false);
+    g_demo.focus_seq = saved_focus_seq;
+    g_demo.focus_active = saved_focus_active;
+    g_demo.mode = saved_mode;
+    set_focus_visuals_immediate();
+    lv_obj_scroll_to_y(g_demo.list, saved_scroll_y, LV_ANIM_OFF);
+    lv_obj_update_layout(g_demo.root);
+
+    return ok;
+}
+
 static void measure_and_apply_details(void)
 {
     lv_obj_update_layout(g_demo.root);
@@ -2752,6 +2836,7 @@ bool motion_demo_smoke_check(void)
        !rounded_mask_clips_capsule_corners(&g_demo.views[view_index_for(0, 3)]) ||
        !run_halftone_workload_is_bounded(&g_demo.views[view_index_for(0, 3)]) ||
        !run_scan_curve_is_continuous() ||
+       !overview_enter_focuses_visible_expanded_card() ||
        !collapse_scroll_finishes_with_detail()) {
         return false;
     }
